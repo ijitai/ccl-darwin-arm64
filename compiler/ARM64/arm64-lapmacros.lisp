@@ -237,9 +237,10 @@
 
 
 ;;; from ppc-lapmacros.lisp:720 (svref — load slot N from simple-vector)
-;;; On PPC64: ld dest, (* 8 index) + misc-data-offset, vector
-;;; On arm64: misc-data-offset = 4.  Offset = 8*index + 4; not 8-aligned
-;;; so we must use ldur (9-bit signed immediate).
+;;; On arm64: misc-data-offset = -4 (arm64-arch.lisp), so the offset is
+;;; 8*index - 4 — 4 mod 8, not 8-aligned — hence ldur (9-bit signed
+;;; immediate) instead of ldr.  (An older comment here claimed +4; that
+;;; was an x86-era leftover.  The CODE below always used the -4 constant.)
 (defarm64lapmacro svref (dest index vector)
   `(ldur ,dest (:@ ,vector (:$ (+ (* ,index arm64::node-size) arm64::misc-data-offset)))))
 
