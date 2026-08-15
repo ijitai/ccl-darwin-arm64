@@ -1801,6 +1801,11 @@ to replace that class with ~s" name old-class new-class)
   (make-istruct-class 'lock-acquisition *istruct-class*)
   (make-istruct-class 'semaphore-notification *istruct-class*)
   (make-istruct-class 'class-wrapper *istruct-class*)
+  ;; Used by trap/error handling on arm64 (and other non-x86 ports); must be
+  ;; a real istruct class so that class-cell-typep (via
+  ;; non-standard-instance-class-wrapper) can find its class-wrapper instead
+  ;; of dereferencing the nil in its istruct-cell info as a wrapper.
+  (make-istruct-class 'fake-stack-frame *istruct-class*)
   ;; Compiler stuff, mostly
   (make-istruct-class 'faslapi *istruct-class*)
   (make-istruct-class 'faslstate *istruct-class*)
