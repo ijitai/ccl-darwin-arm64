@@ -108,6 +108,9 @@
  * corrupt header - die loudly at the object, not in the storm. */
 static LispObj last_rmarks[8];
 static natural last_rmark_idx = 0;
+LispObj GCcheck_container = 0;
+int GCcheck_slot = -1;
+LispObj GCcheck_header = 0;
 
 static void
 check_marked_extent(LispObj n, natural dnode, natural suffix_dnodes)
@@ -351,6 +354,9 @@ check_node(LispObj n)                                /* ppc-gc.c:30-115 */
       a = active_dynamic_area;
       if ((n > (ptr_to_lispobj(a->active))) &&
           (n < (ptr_to_lispobj(a->high)))) {
+        fprintf(stderr, "CHECK-NODE: bad node 0x%lx from container 0x%lx slot %d (header 0x%lx)\n",
+                (unsigned long)n, (unsigned long)GCcheck_container,
+                GCcheck_slot, (unsigned long)GCcheck_header);
         Bug(NULL, "Node points to heap free space: 0x" LISP, n);
       }
       return;
@@ -410,6 +416,9 @@ check_range(LispObj *start, LispObj *end, Boolean header_allowed)
 
       elements = header_element_count(node) | 1;
       while (elements--) {
+        GCcheck_container = (LispObj)prev;
+        GCcheck_slot = (int)(current - prev);
+        GCcheck_header = node;
         check_node(*current++);
       }
     } else {
@@ -1155,6 +1164,9 @@ check_refmap_consistency(LispObj *start, LispObj *end, bitvector refbits, bitvec
       }
       intergen_ref = false;
       if (header_subtag(x1) == subtag_weak) {
+        /* Stock leniency: the weak vector's data slot is memoized by
+           preforward_weakvll (chain walk and the ARM64 sweep), not by a
+           write barrier, so skip the (type,data) dnode here. */
         lenient_next_dnode = true;
       }
       if (is_node_fulltag(tag)) {
@@ -1593,6 +1605,14 @@ dnode_forwarding_address(natural dnode, int tag_n)   /* ppc-gc.c:1131-1174 (PPC6
      dnode>>(dnode_shift+1) directly (ppc-gc.c:1146); on little-endian
      AArch64 the uint32 index must be XORed with 1. */
   near_bits = ((unsigned int *)GCdynamic_markbits)[(dnode>>(dnode_shift+1))^1];
+  if (getenv("CCL_LOG_FWD")) {
+    fprintf(dbgout, ";; FWD dnode=0x%lx tag=%d pagelet=0x%lx nbits=%d near_bits=0x%08x reloc0=0x%lx reloc1=0x%lx firstunmarked=0x%lx\n",
+            (unsigned long)dnode, tag_n, (unsigned long)pagelet, nbits,
+            (unsigned int)near_bits,
+            (unsigned long)GCrelocptr[pagelet],
+            (unsigned long)GCrelocptr[pagelet+1],
+            (unsigned long)GCfirstunmarked);
+  }
 
   if (nbits < 32) {
     new = GCrelocptr[pagelet] + tag_n;

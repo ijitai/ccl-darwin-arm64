@@ -134,6 +134,19 @@ reapweakv(LispObj weakv)
   natural dnode, car_dnode;
   bitvector markbits = GCmarkbits;
 
+  if (getenv("CCL_LOG_WEAK")) {
+    natural cdnode = 0;
+    int cinarea = 0, cbit = -1;
+    if (cell && (fulltag_of(cell) == fulltag_cons)) {
+      cdnode = gc_area_dnode(cell);
+      cinarea = (cdnode < GCndnodes_in_area);
+      if (cinarea) cbit = ref_bit(markbits, cdnode);
+    }
+    fprintf(dbgout, ";; REAP weakv=0x%lx type=0x%lx alist=%d term=%d data=0x%lx dnode=0x%lx inarea=%d marked=%d\n",
+            (unsigned long)weakv, (unsigned long)weak_type, alistp, terminatablep,
+            (unsigned long)cell, (unsigned long)cdnode, cinarea, cbit);
+  }
+
   if (terminatablep) {
     termination_list = deref(weakv,1+3);
   }
@@ -980,21 +993,128 @@ preforward_weakvll ()
 
     while (this) {
       LispObj *base = ptr_from_lispobj(this);
+      LispObj next = base[1];
       if (header_subtag(base[0]) == subtag_weak) {
         natural dnode = area_dnode(&base[3], tenured_low);
         if (base[3] >= GCarealow) {
+          /* ARM64-PORT-FIX (also valid generically): a TENURED weak
+             vector (population) whose data slot points into the
+             ephemeral region was not on this EGC's GCweakvll (only
+             ephemeral weak vectors get marked/reaped), so dead entries
+             were never spliced out.  Reap it NOW (pre-reloc, pre-forward),
+             so dead conses leave NIL instead of a stale pointer into the
+             compacted-away region.  reapweakv marks surviving cells and
+             splices dead ones; both are safe before calculate_relocation.
+             reapweakv also rewrites the weakvll chains; undo that part so
+             the persistent WEAKVLL chain stays exactly as we found it
+             (we are walking it). */
+          { LispObj saved_global = lisp_global(WEAKVLL);
+            LispObj saved_link = base[1];
+            LispObj saved_gcwll = GCweakvll;
+            if (getenv("CCL_LOG_WEAK")) {
+              fprintf(dbgout, ";; PREFWD-REAP weakv=0x%lx data=0x%lx GCarealow=0x%lx\n",
+                      (unsigned long)(ptr_to_lispobj(base) + fulltag_misc),
+                      (unsigned long)base[3], (unsigned long)GCarealow);
+            }
+            reapweakv(ptr_to_lispobj(base) + fulltag_misc);
+            if (getenv("CCL_LOG_WEAK")) {
+              fprintf(dbgout, ";; PREFWD-REAP after: data=0x%lx\n", (unsigned long)base[3]);
+            }
+            GCweakvll = saved_gcwll;
+            lisp_global(WEAKVLL) = saved_global;
+            base[1] = saved_link;
+            /* Terminatable: mark_termination_lists() has already run, so
+               mark any cells the reap spliced onto the termination list. */
+            if ((base[2] >> population_termination_bit) && (base[4] >= GCarealow)) {
+              mark_root(base[4]);
+            }
+          }
           if (dnode < tenured_dnodes) {
             set_bit(refbits, dnode);
+            if (tenured_area->refidx) {
+              set_bit(tenured_area->refidx, dnode >> 8);
+            }
           }
         }
         /* might have set termination list to a new pointer */
         if ((base[2] >> population_termination_bit) && (base[4] >= GCarealow)) {
           if ((dnode + 1) < tenured_dnodes) {
             set_bit(refbits, dnode+1);
+            if (tenured_area->refidx) {
+              set_bit(tenured_area->refidx, (dnode+1) >> 8);
+            }
           }
         }
       }
-      this = base[1];
+      this = next;
+    }
+
+    /* ARM64-PORT-FIX (stopgap for the missing compiler-side write
+       barrier): the persistent WEAKVLL only contains weak vectors that a
+       recent mark re-linked; TENURED weak vectors drop off the chain on
+       every EGC (the mark walk drops dynamic-area entries and the EGC
+       never re-marks tenured objects).  Without the write barrier their
+       data slots pointing into the ephemeral region are untracked, so
+       surviving conses never get marked and die in the compaction.
+       Sweep the tenured region for weak vectors with ephemeral data and
+       reap them; the chain-neutral reap splices dead entries and marks
+       surviving ones (their cars are marked via the usual roots).
+       O(tenured) per EGC -- acceptable until the real write barrier
+       lands in the compiler. */
+    { LispObj *p = tenured_low, *end = (LispObj *)ptr_from_lispobj(GCarealow);
+      while (p < end) {
+        LispObj x1 = *p;
+        natural tag = fulltag_of(x1);
+        if (immheader_tag_p(tag)) {
+          p = (LispObj *)skip_over_ivector((natural)p, x1);
+        } else if (nodeheader_tag_p(tag)) {
+          natural nwords = header_element_count(x1);
+          nwords += (1 - (nwords & 1));
+          if ((header_subtag(x1) == subtag_weak) &&
+              (nwords >= 3) &&
+              (p[3] >= GCarealow)) {
+            natural dnode = area_dnode(&p[3], tenured_low);
+            LispObj saved_global = lisp_global(WEAKVLL);
+            LispObj saved_link = p[1];
+            LispObj saved_gcwll = GCweakvll;
+            if (getenv("CCL_LOG_WEAK")) {
+              fprintf(dbgout, ";; PREFWD-SWEEP-REAP weakv=0x%lx data=0x%lx\n",
+                      (unsigned long)(ptr_to_lispobj(p) + fulltag_misc),
+                      (unsigned long)p[3]);
+            }
+            reapweakv(ptr_to_lispobj(p) + fulltag_misc);
+            GCweakvll = saved_gcwll;
+            lisp_global(WEAKVLL) = saved_global;
+            p[1] = saved_link;
+            if (dnode < tenured_dnodes) {
+              /* Producer protocol (arm64-exceptions.c egc barrier): set
+                 the refbit AND its refidx chunk bit, or the indexed scan
+                 in forward_memoized_area never visits this dnode. */
+              set_bit(refbits, dnode);
+              if (tenured_area->refidx) {
+                set_bit(tenured_area->refidx, dnode >> 8);
+              }
+            }
+            /* Terminatable vector: the reap may have spliced dead cells
+               onto the termination list.  mark_termination_lists() already
+               ran (inside markhtabvs), so mark the (possibly grown) term
+               list head here, and set the refbit for its dnode pair so
+               the slot gets forwarded. */
+            if ((p[2] >> population_termination_bit) && (p[4] >= GCarealow)) {
+              mark_root(p[4]);
+              if ((dnode + 1) < tenured_dnodes) {
+                set_bit(refbits, dnode+1);
+                if (tenured_area->refidx) {
+                  set_bit(tenured_area->refidx, (dnode+1) >> 8);
+                }
+              }
+            }
+          }
+          p += (nwords + 1);
+        } else {
+          p += 2;
+        }
+      }
     }
   }
 }
@@ -1236,6 +1356,36 @@ forward_memoized_area(area *a, natural num_memo_dnodes, bitvector refbits, bitve
       }
       p++;
       
+      /* ARM64-PORT-FIX: the pair (p[-1], *p) can be the (type, data) slots
+         of a TENURED weak vector (population).  Such vectors are not on
+         the current GC's weakvll (the EGC only marks ephemeral weak
+         vectors), so dead entries were never spliced; node_forwarding_address
+         leaves a dead ephemeral cons unchanged (stale pointer into the
+         soon-to-be-compacted region).  Reap the vector here (chain-neutral:
+         the gclink/global updates are restored, exactly as preforward does),
+         which splices dead entries and marks surviving cells. */
+      if (((p - pbase) >= 3) &&
+          (header_subtag(p[-3]) == subtag_weak) &&
+          ((header_element_count(p[-3]) == 3) ||
+           (header_element_count(p[-3]) == 4))) {
+        /* p is the data slot (base+3) of a weak vector: the memoized
+           pair is (type, data) and the header is 3 words back. */
+        LispObj *wbase = p - 3;
+        if (getenv("CCL_LOG_WEAK")) {
+          fprintf(dbgout, ";; MEMO-WEAK p=0x%lx wbase=0x%lx pairpos=%d\n",
+                  (unsigned long)p, (unsigned long)wbase, (int)(p - wbase));
+        }
+        { LispObj saved_global = lisp_global(WEAKVLL);
+          LispObj saved_link = wbase[1];
+          LispObj saved_gcwll = GCweakvll;
+          reapweakv(ptr_to_lispobj(wbase) + fulltag_misc);
+          GCweakvll = saved_gcwll;
+          lisp_global(WEAKVLL) = saved_global;
+          wbase[1] = saved_link;
+          x2 = *p;                    /* re-read after the splice */
+        }
+      }
+
       new = node_forwarding_address(x2);
       if (new != x2) {
         *p = new;
