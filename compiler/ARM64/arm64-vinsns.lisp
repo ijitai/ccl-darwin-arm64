@@ -7580,7 +7580,13 @@
 (define-arm64-vinsn complex-single-float->node (((result :lisp))
                                                 ((fpreg :complex-single-float))
                                                 ((header-temp :u64)))
-  (mov header-temp (:$ (logior (ash arm64::complex-single-float.element-count
+  ;; ARM64-PORT-FIX: element count must be 2 (2 x 4 = 8 data bytes),
+  ;; matching complex-single-float->heap and the x8664 canon
+  ;; (make-vheader 2 subtag-complex-single-float).  The
+  ;; define-fixedsized-object .element-count is 1, which would make the
+  ;; GC size this ivector_class_32_bit object as 8+4=12 bytes and
+  ;; miswalk the heap.
+  (mov header-temp (:$ (logior (ash 2
                                     arm64::num-subtag-bits)
                                arm64::subtag-complex-single-float)))
   (sub allocptr allocptr (:$ (- arm64::complex-single-float.size
