@@ -465,8 +465,6 @@
     (let* ((offset (+ free tag)))
       (declare (fixnum offset))
       (let ((addr (+ (xload-space-vaddr space) offset)))
-        (format t "~&;; XLOAD-ALLOC space-vaddr=~x free=~x tag=~x addr=~x~%"
-                (xload-space-vaddr space) free tag addr)
         (values
          addr
          (xload-space-data space)
@@ -1046,7 +1044,6 @@
           (make-hash-table :test #'eql))
          (*xload-next-special-binding-index*
           (length *xload-reserved-special-binding-index-symbols*)))
-    (format t "~&;; XLOAD-DEBUG readonly=~x dynamic=~x static=~x nil=~x~%" *xload-readonly-space-address* *xload-dynamic-space-address* *xload-static-space-address* *xload-target-nil*)
     (funcall (backend-xload-info-static-space-init-function
               *xload-target-backend*))
     ;; Create %unbound-function% and the package objects in dynamic space,
@@ -1807,7 +1804,6 @@
   (let* ((sym (%fasl-expr s))
          (val (%fasl-expr s))
          (doc (%fasl-expr s)))
-    (format t "~&;; DEFVAR-INIT sym=~x val=~x~%" sym val)
     (unless (= doc *xload-target-nil*)
       (xload-set-documentation sym 'variable doc))
     (when (= *xload-target-unbound-marker*
