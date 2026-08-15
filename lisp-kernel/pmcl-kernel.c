@@ -53,6 +53,9 @@
 #ifndef ANDROID
 #include <elf.h>
 #endif
+#if defined(DARWIN) && defined(ARM64)
+#include <pthread.h>
+#endif
 
 /* 
    The version of <asm/cputable.h> provided by some distributions will
@@ -235,11 +238,18 @@ allocate_lisp_stack(natural useable,
 {
   void *allocate_stack(natural);
   void free_stack(void *);
-  natural size = useable+softsize+hardsize;
-  natural overhead;
+  natural size, overhead;
   BytePtr base, softlimit, hardlimit;
-  Ptr h = allocate_stack(size+4095);
+  Ptr h;
   protected_area_ptr hprotp = NULL, sprotp;
+
+  /* macOS arm64 uses 16K pages: round the guard sizes up to a whole page
+     so hard/soft limits stay page-aligned (mprotect rejects 4K-aligned
+     addresses with EINVAL).  Rounding up is harmless on 4K-page hosts. */
+  hardsize = align_to_power_of_2(hardsize, log2_page_size);
+  softsize = align_to_power_of_2(softsize, log2_page_size);
+  size = useable+softsize+hardsize;
+  h = allocate_stack(size+page_size-1);
 
   if (h == NULL) {
     return NULL;
@@ -322,11 +332,14 @@ allocate_lisp_stack_area(area_code stack_type,
 area*
 register_cstack_holding_area_lock(BytePtr bottom, natural size)
 {
-  BytePtr lowlimit = (BytePtr) (((((natural)bottom)-size)+4095)&~4095);
+  BytePtr lowlimit = (BytePtr) align_to_power_of_2(((natural)bottom)-size,
+                                                    log2_page_size);
+  natural hardprot = align_to_power_of_2(CSTACK_HARDPROT, log2_page_size);
+  natural softprot = align_to_power_of_2(CSTACK_SOFTPROT, log2_page_size);
   area *a = new_area((BytePtr) bottom-size, bottom, AREA_CSTACK);
-  if (size > (CSTACK_HARDPROT + CSTACK_SOFTPROT)) {
-    a->hardlimit = lowlimit+CSTACK_HARDPROT;
-    a->softlimit = a->hardlimit+CSTACK_SOFTPROT;
+  if (size > (hardprot + softprot)) {
+    a->hardlimit = lowlimit+hardprot;
+    a->softlimit = a->hardlimit+softprot;
   } else {
     a->softlimit = a->hardlimit = lowlimit;
   }
@@ -335,8 +348,8 @@ register_cstack_holding_area_lock(BytePtr bottom, natural size)
 #endif
 #ifdef PROTECT_CSTACK
   if (a->softlimit != a->hardlimit) {
-    a->softprot=new_protected_area(a->hardlimit,a->softlimit,kSPsoftguard,CSTACK_SOFTPROT,true);
-    a->hardprot=new_protected_area(lowlimit,a->hardlimit,kSPhardguard,CSTACK_HARDPROT,true);
+    a->softprot=new_protected_area(a->hardlimit,a->softlimit,kSPsoftguard,softprot,true);
+    a->hardprot=new_protected_area(lowlimit,a->hardlimit,kSPhardguard,hardprot,true);
   }
 #endif
   add_area_holding_area_lock(a);
@@ -1936,10 +1949,20 @@ main
 #else
   real_executable_name = determine_executable_name(argv[0]);
   page_size = sysconf(_SC_PAGESIZE);
+  {
+    /* Derive log2_page_size from the (possibly 16K) system page size;
+       the per-arch exceptions files only default it to 12 (4K). */
+    int ps = page_size;
+    log2_page_size = 0;
+    while (ps > 1) { ps >>= 1; log2_page_size++; }
+  }
 #endif
 
 
   check_bogus_fp_exceptions();
+#if defined(DARWIN) && defined(ARM64)
+  init_code_area();
+#endif
 #ifdef LINUX
 #ifdef X8664
   ensure_gs_available(real_executable_name);
@@ -2075,6 +2098,7 @@ main
   gc_init();
 
   set_nil(load_image(image_name));
+  fprintf(dbgout, ";; after load_image, nil=0x" LISP "\n", (LispObj)lisp_nil);
   lisp_heap_notify_threshold = lisp_global(GC_NOTIFY_THRESHOLD);
   lisp_heap_threshold_from_image = lisp_global(LISP_HEAP_THRESHOLD);
   
@@ -2113,7 +2137,7 @@ main
 
 
   exception_init();
-
+  fprintf(dbgout, ";; after exception_init\n");
   
 
 #ifdef WINDOWS
@@ -2167,6 +2191,15 @@ main
   lisp_global(INTERRUPT_SIGNAL) = (LispObj) box_fixnum(SIGNAL_FOR_PROCESS_INTERRUPT);
 #endif
   tcr->vs_area->active -= node_size;
+  fprintf(dbgout, ";; vpush toplevel: nil_value=0x" LISP " nrs_TOPLFUNC=0x" LISP " vcell=0x" LISP "\n",
+          (LispObj)nil_value, (LispObj)&nrs_TOPLFUNC, (LispObj)nrs_TOPLFUNC.vcell);
+  {
+    natural *p = (natural *)&nrs_TOPLFUNC;
+    int k;
+    fprintf(dbgout, ";; static dump @0x" LISP ":\n", (LispObj)p);
+    for (k = -4; k < 8; k++)
+      fprintf(dbgout, ";;   [%d] = 0x" LISP "\n", k, (LispObj)p[k]);
+  }
   *(--tcr->save_vsp) = nrs_TOPLFUNC.vcell;
   nrs_TOPLFUNC.vcell = lisp_nil;
 #ifdef GC_INTEGRITY_CHECKING
@@ -2191,6 +2224,7 @@ main
 #endif
 #endif
   start_lisp(TCR_TO_TSD(tcr), 0);
+  fprintf(dbgout, ";; after start_lisp (returned)\n");
   _exit(0);
 }
 
@@ -2205,6 +2239,86 @@ set_nil(LispObj r)
   return NULL;
 }
 
+
+#if defined(DARWIN) && defined(ARM64)
+void
+xMakeDataWritable(void)
+{
+  /* Flip the MAP_JIT code area back to writable so a code vector can be
+     allocated/filled.  The dynamic heap is NOT MAP_JIT, so this does not
+     affect ordinary consing. */
+  pthread_jit_write_protect_np(0);
+}
+
+/* Allocate a code vector in the MAP_JIT code area and fill it with `count`
+   32-bit code words copied from the u32-vector `words`.  The RW->RX JIT
+   toggle happens entirely inside this single kernel entry, so the caller —
+   the resident compiler, which itself RUNS from the MAP_JIT code area — is
+   never left non-executable.  (Misc_Alloc_Code leaves the area RW for the
+   level-0 READONLY fasl loader, which fills directly; the compiler must not
+   use that path because its own code would stop executing.) */
+LispObj
+make_code_vector(LispObj words, natural count)
+{
+  natural nbytes = count * sizeof(unsigned int);
+  natural size = (nbytes + node_size + dnode_size - 1) & ~(dnode_size - 1);
+  natural header = (count << num_subtag_bits) | subtag_code_vector;
+  BytePtr tagged;
+  unsigned int *src = (unsigned int *)(words + misc_data_offset);
+  unsigned int *dst;
+  natural i;
+
+  pthread_jit_write_protect_np(0);            /* RW */
+
+  tagged = code_area_allocptr - (size - fulltag_misc);
+  if (tagged <= code_area_limit) {
+    pthread_jit_write_protect_np(1);
+    Fatal(":   code area exhausted", "");
+  }
+  *(natural *)(tagged + misc_header_offset) = header;
+  code_area_allocptr = (BytePtr)((natural)tagged & ~(natural)fulltagmask);
+
+  dst = (unsigned int *)(tagged + misc_data_offset);
+  for (i = 0; i < count; i++)
+    dst[i] = src[i];
+
+  /* The code words were written with ordinary data stores; flush the
+     I-cache for that exact range before the RW->RX toggle.  Relying on
+     pthread_jit_write_protect_np(1) alone left stale I-cache lines on some
+     runs, so the resident compiler intermittently executed garbage (SIGILL
+     at a valid-looking opcode read back from memory).  Same order as
+     xMakeDataExecutable: invalidate first, then flip to executable. */
+  sys_icache_invalidate(tagged + misc_data_offset, nbytes);
+  pthread_jit_write_protect_np(1);            /* RX */
+  return (LispObj)tagged;
+}
+
+/* Write a 32-byte callback trampoline at `p` (in the MAP_JIT callback page)
+   and flip the JIT region RW->RX atomically.  `index` is the raw callback
+   index.  The trampoline loads `index` into x8 and branches to .SPcallback.
+   The write must happen in the kernel because pthread_jit_write_protect_np is
+   process-wide: a write from Lisp would make the caller's own MAP_JIT code
+   non-executable mid-run (same W^X hazard make_code_vector avoids). */
+void
+make_callback_trampoline(BytePtr p, natural index)
+{
+  extern void SPcallback(void);   /* assembler symbol _SPcallback */
+  natural addr = (natural)&SPcallback;
+  unsigned int *dst = (unsigned int *)p;
+
+  pthread_jit_write_protect_np(0);            /* RW */
+  dst[0] = 0xd2800008 | ((index & 0xffff) << 5);         /* movz x8,#lo16(index) */
+  dst[1] = 0xf2a00008 | (((index >> 16) & 0xffff) << 5); /* movk x8,#hi16(index),lsl16 */
+  dst[2] = 0x58000090;                        /* ldr x16,.+16 */
+  dst[3] = 0xd61f0200;                        /* br x16 */
+  dst[4] = 0xd503201f;                        /* nop */
+  dst[5] = 0xd503201f;                        /* nop */
+  *(natural *)(p + 24) = addr;                /* .SPcallback address */
+  sys_icache_invalidate(p, 32);
+  pthread_jit_write_protect_np(1);            /* RX */
+}
+
+#endif
 
 void
 xMakeDataExecutable(BytePtr start, natural nbytes)
@@ -2222,6 +2336,15 @@ xMakeDataExecutable(BytePtr start, natural nbytes)
   flush_cache_lines(start,nbytes);
 #endif
 #ifdef ARM64
+#ifdef DARWIN
+  /* W^X: code vectors live in the MAP_JIT code area.  After the fasl
+     loader writes a code vector it calls here; sync the I-cache and
+     flip the JIT pages to executable.  (pthread_jit_write_protect_np is
+     process-wide but the dynamic heap is NOT MAP_JIT, so this only
+     affects the code area.) */
+  sys_icache_invalidate(start, nbytes);
+  pthread_jit_write_protect_np(1);
+#else
   /* Without this arm the whole function is an empty body on arm64:
      lisp-kernel/linuxarm64/Makefile defines ARM64 and neither ARM nor
      PPC, so no I-cache maintenance ran after compact_dynamic_heap()
@@ -2264,6 +2387,7 @@ xMakeDataExecutable(BytePtr start, natural nbytes)
     end = (ustart + nbytes + linesize - 1) & ~(linesize-1);
     flush_cache_lines(base, (end-base)/linesize, linesize);
   }
+#endif
 #endif
 }
 

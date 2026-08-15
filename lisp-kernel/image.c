@@ -219,6 +219,7 @@ load_image_section(int fd, openmcl_image_section_header *sect)
   switch(sect->code) {
   case AREA_READONLY:
     if (mem_size != 0) {
+      fprintf(dbgout, ";; loading READONLY section @0x" LISP " size 0x" LISP "\n", (LispObj)pure_space_active, (LispObj)mem_size);
       if (!MapFile(pure_space_active,
                    pos,
                    align_to_power_of_2(mem_size,log2_page_size),
@@ -234,10 +235,11 @@ load_image_section(int fd, openmcl_image_section_header *sect)
     break;
 
   case AREA_STATIC:
+    fprintf(dbgout, ";; loading STATIC section @0x" LISP " size 0x" LISP "\n", (LispObj)static_space_active, (LispObj)mem_size);
     if (!MapFile(static_space_active,
 		 pos,
 		 align_to_power_of_2(mem_size,log2_page_size),
-		 MEMPROTECT_RWX,
+		 MEMPROTECT_RW,   /* static area is data (nil + symbols), not code */
 		 fd)) {
       return;
     }
@@ -249,10 +251,11 @@ load_image_section(int fd, openmcl_image_section_header *sect)
 
   case AREA_DYNAMIC:
     a = allocate_dynamic_area(mem_size);
+    fprintf(dbgout, ";; loading DYNAMIC section @0x" LISP " size 0x" LISP "\n", (LispObj)(a?a->low:0), (LispObj)mem_size);
     if (!MapFile(a->low,
 		 pos,
 		 align_to_power_of_2(mem_size,log2_page_size),
-		 MEMPROTECT_RWX,
+		 MEMPROTECT_RW,   /* data (code lives in pure/READONLY on macOS) */
 		 fd)) {
       return;
     }
@@ -271,7 +274,7 @@ load_image_section(int fd, openmcl_image_section_header *sect)
       if (!MapFile(a->low,
                    pos,
                    align_to_power_of_2(mem_size,log2_page_size),
-                   MEMPROTECT_RWX,
+                   MEMPROTECT_RW,   /* managed static is data */
                    fd)) {
         return;
       }
@@ -322,7 +325,7 @@ load_image_section(int fd, openmcl_image_section_header *sect)
       if (!MapFile(a->low,
                    pos,
                    align_to_power_of_2(mem_size,log2_page_size),
-                   MEMPROTECT_RWX,
+                   MEMPROTECT_RW,   /* static conses are data */
                    fd)) {
         return;
       }
@@ -351,6 +354,8 @@ load_openmcl_image(int fd, openmcl_image_file_header *h)
     int i, nsections = h->nsections;
     openmcl_image_section_header sections[nsections], *sect=sections;
     LispObj bias = image_base - ACTUAL_IMAGE_BASE(h);
+    fprintf(dbgout, ";; load_openmcl_image: image_base=0x" LISP " actual=0x" LISP " bias=0x" LISP "\n",
+            (LispObj)image_base, (LispObj)ACTUAL_IMAGE_BASE(h), (LispObj)bias);
 #if (WORD_SIZE== 64)
     signed_natural section_data_delta = 
       ((signed_natural)(h->section_data_offset_high) << 32L) | h->section_data_offset_low;
@@ -382,8 +387,10 @@ load_openmcl_image(int fd, openmcl_image_file_header *h)
 #endif
     }
 
+    fprintf(dbgout, ";; starting second loop (post-process)\n");
     for (i = 0, sect = sections; i < nsections; i++, sect++) {
       a = sect->area;
+      fprintf(dbgout, ";; post-process section code=%d\n", sect->code);
       switch(sect->code) {
       case AREA_STATIC:
 	nilreg_area = a;
@@ -455,8 +462,12 @@ load_openmcl_image(int fd, openmcl_image_file_header *h)
         if (bias) {
           relocate_area_contents(a, bias);
         }
+        fprintf(dbgout, ";; DYNAMIC: resize_dynamic_heap active=0x" LISP " threshold=0x" LISP "\n",
+                (LispObj)a->active, (LispObj)lisp_heap_gc_threshold);
 	resize_dynamic_heap(a->active, lisp_heap_gc_threshold);
+        fprintf(dbgout, ";; DYNAMIC: xMakeDataExecutable\n");
 	xMakeDataExecutable(a->low, a->active - a->low);
+        fprintf(dbgout, ";; DYNAMIC: xMakeDataExecutable done\n");
 	break;
       }
     }

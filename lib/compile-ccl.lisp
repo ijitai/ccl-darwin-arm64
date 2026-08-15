@@ -595,7 +595,7 @@ not runtime errors reported by a successfully created process."
                (%strerror exit-code))
               #-windows-target
               (:exited
-               (when(= exit-code #-android-target #$EX_OSERR #+android-target 71)
+               (when(= exit-code 71) ; EX_OSERR (sysexits.h); literal to avoid needing host .cdb
                  "generic OS error in fork/exec")))))
       (when string
         (format nil "Error executing ~a: ~a~&~a" procname string reminder)))))

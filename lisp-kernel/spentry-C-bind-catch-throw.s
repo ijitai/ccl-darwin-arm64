@@ -742,7 +742,9 @@ spentry setqsym
            Constant symbol => error; otherwise the real work is in .SPspecset. */
         ldr imm0, [arg_y, #symbol.flags]
         tst imm0, #sym_vbit_const_mask
-        b.eq _SPspecset
+        b.ne 1f
+        b _SPspecset
+1:
         mov arg_z, arg_y
         mov arg_y, #XCONST
         set_nargs 2
@@ -858,7 +860,9 @@ spentry bind_interrupt_level
         ldr imm4, [rcontext, #tcr.tlb_pointer]              /* ppc:7002 */
         ldr temp0, [imm4, #INTERRUPT_LEVEL_BINDING_INDEX]   /* ppc:7003 old level */
         ldr imm1, [rcontext, #tcr.db_link]                  /* ppc:7004 */
-        b.eq _SPbind_interrupt_level_0  /* ppc:7005 beq -> bind to 0 */
+        b.ne 1f
+        b _SPbind_interrupt_level_0  /* ppc:7005 beq -> bind to 0 */
+1:
         vpush1 temp0                    /* ppc:7006 binding frame: old value */
         vpush1 imm3                     /* ppc:7007               tlb index   */
         vpush1 imm1                     /* ppc:7008               prev db_link*/

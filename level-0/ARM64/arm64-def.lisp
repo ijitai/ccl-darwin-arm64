@@ -212,10 +212,165 @@
     (str len (:@ sp (:$ (+ arm64::c-frame.param0 8))))    ; ppc:37 param1
     (ref-global imm3 kernel-imports)    ; ppc:38
     (ldr arg_z (:@ imm3 (:$ arm64::kernel-import-makedataexecutable))) ; ppc:39
+    (box-fixnum arg_z arg_z)            ; box raw address -> GC-safe fixnum (SPffcall unboxes)
     (call-subprim .SPffcall)            ; ppc:40 (bla — LINKED call)
     (mov arg_z rnil)                    ; ppc:41
     (restore-full-lisp-context)         ; ppc:42
     (ret)))                             ; ppc:43
+
+;;; %make-code-vector — W^X fix (companion to %make-code-executable).
+;;; Allocate a code vector in the MAP_JIT code area, copy the instruction
+;;; words from a dynamic-heap u32-vector, and flip the area RW->RX in one
+;;; atomic kernel call -- so the resident compiler (which itself runs from
+;;; the code area) never executes while its own pages are non-executable.
+;;; args: arg_y = u32-vector of instruction words, arg_z = fixnum count.
+;;; returns arg_z = the tagged code vector.  Whole body is one subprim,
+;;; so jump-subprim's tail `br' makes the subprim's `ret' return directly
+;;; to our caller.
+(defarm64lapfunction %make-code-vector ((words arg_y) (count arg_z))
+  (jump-subprim .SPmake-code-vector))
+
+;;; %make-callback-trampoline — W^X fix (companion to %make-code-vector).
+;;; Write a 32-byte callback trampoline at the macptr `p` (in the MAP_JIT
+;;; callback page) and flip the JIT region RW->RX in one atomic kernel call,
+;;; so the caller never executes while its own MAP_JIT code is non-executable.
+;;; args: arg_y = p (macptr), arg_z = index (fixnum).
+(defarm64lapfunction %make-callback-trampoline ((p arg_y) (index arg_z))
+  (jump-subprim .SPmake-callback-trampoline))
+
+;;; =====================================================================
+;;; %do-ff-call — AAPCS64 runtime FFI (interpreted %ff-call path).
+;;; frame (arg_y) = the c_frame base, passed explicitly by %ff-call (the
+;;; with-variable-c-frame frame var: %foreign-stack-pointer returns SP as a
+;;; 16-aligned fixnum whose raw bits ARE the address).  entry (arg_z) = the
+;;; foreign entry point (macptr or boxed fixnum).
+;;;
+;;; We are a LEAF (no lisp frame), so SP still points at the c_frame when
+;;; .SPffcall runs -- it reads the frame header, loads x0-x7, blr's entry,
+;;; and on return restores SP from the frame's savedsp (SUBPRIM-POPS).  Two
+;;; things must be preserved across the subprim call, because call-subprim's
+;;; `blr' clobbers LR and .SPffcall nils every arg register on the way out:
+;;;   1. LR (our own return address) -- parked on the value stack, else our
+;;;      trailing `ret' re-enters the vpop (infinite loop: vpop/str/str/ret).
+;;;   2. frame (arg_y) -- .SPffcall sets arg_y := nil, so we vpush it too.
+;;;
+;;; After the call we must ALSO put SP back at the c_frame base, because the
+;;; with-variable-c-frame epilogue in %ff-call reads the saved SP from
+;;; [c_frame+8]; .SPffcall already moved SP to that saved value, so without
+;;; this the epilogue would read [savedsp+8] and skew SP (observed: sp=0).
+;;; The result registers are parked at param0/param1 (frame+16/+24) -- NOT
+;;; frame+8, which is the savedsp slot the epilogue still needs -- and
+;;; %ff-call boxes them via argptr at those offsets.
+(defarm64lapfunction %do-ff-call ((frame arg_y) (entry arg_z))
+  (vpush lr)                        ; save our return address
+  (vpush frame)                     ; save c_frame base (arg_y clobbered by subprim)
+  (call-subprim .SPffcall)          ; arg_z = entry, sp = c_frame
+  (vpop frame)                      ; restore c_frame base
+  (vpop lr)                         ; restore return address
+  (mov sp frame)                    ; put SP back at the c_frame base
+  (str imm0 (:@ frame (:$ 16)))     ; x0 -> param0
+  (str d0  (:@ frame (:$ 24)))      ; d0 -> param1
+  (ret))
+
+(defun %ff-call (entry &rest specs-and-vals)
+  ;; NOTE: no (dynamic-extent specs-and-vals) here -- the arm64 stack-cons
+  ;; &rest path (.SPreq_stack_rest_arg -> tsp) crashed (write #x0) under the
+  ;; interpreter; heap &rest is correct.
+  (let* ((len (length specs-and-vals))
+         (total-words 0))
+    (declare (fixnum len total-words))
+    (let* ((result-spec (or (car (last specs-and-vals)) :void))
+           (nargs (ash (the fixnum (1- len)) -1))
+           (n-fp-args 0))
+      (declare (fixnum nargs n-fp-args))
+      (ecase result-spec
+        ((:address :unsigned-doubleword :signed-doubleword
+                   :single-float :double-float
+                   :signed-fullword :unsigned-fullword
+                   :signed-halfword :unsigned-halfword
+                   :signed-byte :unsigned-byte
+                   :void)
+         ;; Pass 1: count GPR-class words (FP args go in the fp-args buffer).
+         (do* ((i 0 (1+ i))
+               (specs specs-and-vals (cddr specs))
+               (spec (car specs) (car specs)))
+              ((= i nargs))
+           (declare (fixnum i))
+           (case spec
+             ((:double-float :single-float)
+              (incf n-fp-args))
+             ((:address :signed-doubleword :unsigned-doubleword
+                        :signed-fullword :unsigned-fullword
+                        :signed-halfword :unsigned-halfword
+                        :signed-byte :unsigned-byte)
+              (incf total-words))
+             (:registers )
+             (t (if (typep spec 'unsigned-byte)
+                  (incf total-words spec)
+                  (error "unknown arg spec ~s" spec)))))
+         (when (> total-words 8)
+           (error "too many GPR args in %ff-call: ~s" specs-and-vals))
+         (when (> n-fp-args 8)
+           (error "too many FP args in %ff-call: ~s" specs-and-vals))
+         ;; The c frame is the youngest thing on the foreign stack.
+         ;; .SPffcall always loads 8 GPR args (x0-x7) from the param area and
+         ;; builds its boundary lisp_frame at frame+80, so the frame must have
+         ;; 8 GPR slots even for 0 args (the compiled aapcs64-ff-call path
+         ;; reserves 8 the same way).  FP args are staged in fp-args, not the
+         ;; frame.
+         (%stack-block ((fp-args (* 8 8)))    ; 8 doubles
+           (with-macptrs ((argptr))
+             (with-variable-c-frame 8 frame
+               (%setf-macptr-to-object argptr frame)
+               (let* ((gpr-offset 16))
+                 (declare (fixnum gpr-offset))
+                 (do* ((i 0 (1+ i))
+                       (nfpr 0)
+                       (specs specs-and-vals (cddr specs))
+                       (spec (car specs) (car specs))
+                       (val (cadr specs) (cadr specs)))
+                      ((= i nargs))
+                   (declare (fixnum i))
+                   (case spec
+                     (:address
+                      (setf (%get-ptr argptr gpr-offset) val)
+                      (incf gpr-offset 8))
+                     ((:signed-doubleword :signed-fullword :signed-halfword
+                                           :signed-byte)
+                      (setf (%%get-signed-longlong argptr gpr-offset) val)
+                      (incf gpr-offset 8))
+                     ((:unsigned-doubleword :unsigned-fullword :unsigned-halfword
+                                            :unsigned-byte)
+                      (setf (%%get-unsigned-longlong argptr gpr-offset) val)
+                      (incf gpr-offset 8))
+                     (:double-float
+                      (setf (%get-double-float fp-args (* nfpr 8)) val)
+                      (incf nfpr))
+                     (:single-float
+                      (setf (%get-single-float fp-args (* nfpr 8)) val)
+                      (incf nfpr))
+                     (:registers )
+                     (t (error "unknown arg spec ~s" spec)))))
+                 ;; Load FP argument registers (d0..d7) from the staging buffer.
+                 ;; %load-fp-arg-regs dereferences the macptr itself (macptr-ptr),
+                 ;; so pass fp-args directly (x86 passes fp-args to %do-ff-call the
+                 ;; same way) -- NOT via %setf-macptr-to-object, which stores the
+                 ;; TAGGED macptr and made d0 load from [tagged+0] (garbage FP args).
+                 (%load-fp-arg-regs (ash n-fp-args arm64::fixnumshift) fp-args)
+                 (%do-ff-call frame entry)
+                 (ecase result-spec
+                   (:void nil)
+                   (:address (%get-ptr argptr 16))
+                   (:unsigned-byte (%get-unsigned-byte argptr 16))
+                   (:signed-byte (%get-signed-byte argptr 16))
+                   (:unsigned-halfword (%get-unsigned-word argptr 16))
+                   (:signed-halfword (%get-signed-word argptr 16))
+                   (:unsigned-fullword (%get-unsigned-long argptr 16))
+                   (:signed-fullword (%get-signed-long argptr 16))
+                   (:unsigned-doubleword (%get-natural argptr 16))
+                   (:signed-doubleword (%get-signed-natural argptr 16))
+                   (:single-float (%get-single-float argptr 24))
+                   (:double-float (%get-double-float argptr 24)))))))))))
 
 ;;; =====================================================================
 ;;; %lookup-subprim-address — ARM-ISA analog (arm-def.lisp:612); no PPC64

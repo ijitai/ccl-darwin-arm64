@@ -53,9 +53,9 @@ typedef ucontext_t ExceptionInformation;   /* platform-linuxarm.h:31 */
 /* CS_OVERFLOW_FORCE_LIMIT: now provided by his area.h arm64 branch
    (-(sizeof(lisp_frame)), = our -32).  RECONCILED 556aebe8: dropped. */
 #ifndef STATIC_BASE_ADDRESS
-#define STATIC_BASE_ADDRESS 0x00012000     /* = X86 shape (x86-constants.h:74):
-                                              one page under canonical nil
-                                              (0x13000, arm64-arch.lisp:184) */
+#define STATIC_BASE_ADDRESS 0x400000000000 /* high static space (macOS-compatible;
+                                              nil at +0x1000, matching
+                                              arm64-arch.lisp canonical-nil-value) */
 #endif
 /* lisp_globals.h grew a real ARM64 branch @ 93d72a0 (nil-anchored:
    nil_value = the runtime lisp_nil, set by set_nil() at image-load

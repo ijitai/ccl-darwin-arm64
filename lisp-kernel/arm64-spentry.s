@@ -247,19 +247,16 @@ spentry ffcall
         sub imm0, imm0, #(4 << num_subtag_bits) /* publish the 4 words */
         str imm0, [sp, #c_frame.header]
         /* Unbox the entry point into temp4 (x16 = IP0). */
-        /* PPC-faithful discrimination (ppc:1802-1814 extract_typecode):
-         * macptr iff fulltag_misc AND header subtag == subtag_macptr;
-         * anything else the raw bits ARE the address.  A bare tst
-         * #tagmask misclassified 4-aligned C entry points (16m5l). */
-        and imm2, arg_z, #fulltagmask
-        cmp imm2, #fulltag_misc
-        b.ne 8f
-        ldurb w2, [arg_z, #misc_subtag_offset]
-        cmp imm2, #subtag_macptr
-        b.ne 8f
-        ldur temp4, [arg_z, #macptr.address]
-        b 9f
-8:      mov temp4, arg_z        // fixnum-locative / raw code address
+        /* x86-faithful (x86-spentry64.s:4216-4222): the entry is either a
+         * boxed fixnum (the raw address, from %kernel-import) or a macptr
+         * (from #_ / %int-to-ptr).  Unbox a fixnum; otherwise deref the
+         * macptr's address field.  The old PPC-style raw-address path is
+         * gone: every entry now reaches here boxed or as a macptr. */
+        asr imm1, arg_z, #fixnumshift       // tentative: imm1 = address
+        and imm2, arg_z, #fixnummask        // low 3 bits
+        cbz imm2, 8f                         // fixnum: imm1 already holds address
+        ldur imm1, [arg_z, #macptr.address]  // macptr: imm1 = address field
+8:      mov temp4, imm1
 9:
         /* Publish lisp state to the TCR for the GC, then go foreign. */
         str vsp, [rcontext, #tcr.save_vsp]
@@ -518,4 +515,6 @@ C(sptab):
         .quad _SPcallbuiltin3 // 129 SPcallbuiltin3 (PROPOSED extension, 16m5f)
         .quad _SPlexpr_entry // 130 SPlexpr_entry (PROPOSED extension, 16m5f)
         .quad _SPnmkunwind // 131 SPnmkunwind (PROPOSED extension, 16m5f)
+        .quad _SPmake_code_vector // 132 SPmake_code_vector (W^X fix: code-area alloc + RW->RX toggle)
+        .quad _SPmake_callback_trampoline // 133 SPmake_callback_trampoline (W^X fix: callback trampoline write)
 C(sptab_end):

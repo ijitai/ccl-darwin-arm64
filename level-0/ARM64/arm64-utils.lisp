@@ -19,6 +19,7 @@
   (ref-global imm0 kernel-imports)      ; ppc:621
   (unbox-fixnum imm1 arg_z)             ; ppc:622
   (ldr arg_z (:@ imm0 imm1))            ; ppc:623 (ldrx)
+  (box-fixnum arg_z arg_z)              ; return a GC-safe boxed fixnum (x86:526)
   (ret))                                ; ppc:624
 
 ;;; =====================================================================

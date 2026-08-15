@@ -38,15 +38,67 @@
 ;; regs[0] within uc_mcontext (ucontext.ffi: mcontext regs @8); sp/pc/
 ;; pstate follow the regs array contiguously, so they are reachable
 ;; from the same base: sp = 256-8, pc = 264-8, pstate = 272-8.
+;; DARWIN: the same flat offsets are relative to __ss.__x[0], because
+;; __darwin_arm_thread_state64 is {__x[29], __fp(x29), __lr(x30),
+;; __sp, __pc, __cpsr, __pad} — identical geometry to Linux's
+;; regs[31] + sp + pc + pstate.
 (defconstant xp-sp-offset-in-regs 248)
 (defconstant xp-pc-offset-in-regs 256)
 (defconstant xp-pstate-offset-in-regs 264)
+
+#+darwinarm64-target
+(eval-when (:compile-toplevel :execute)
+  ;; Darwin/arm64 mach exception-state records (named darwin-*, as the
+  ;; PPC64 donor does at ppc-trap-support.lisp:120-146, to avoid the
+  ;; interface-db's __darwin-* x86-64 layouts).
+  (def-foreign-type nil
+      (:struct :darwin-arm-exception-state64
+        (:far (:unsigned 64))
+        (:esr (:unsigned 32))
+        (:exception (:unsigned 32))))
+  (def-foreign-type nil
+      (:struct :darwin-arm-thread-state64
+        (:x (:array (:unsigned 64) 29))
+        (:fp (:unsigned 64))
+        (:lr (:unsigned 64))
+        (:sp (:unsigned 64))
+        (:pc (:unsigned 64))
+        (:cpsr (:unsigned 32))
+        (:pad (:unsigned 32))))
+  (def-foreign-type nil
+      (:struct :darwin-arm-neon-state64
+        (:v (:array (:unsigned 64) 64))   ; 32 x __uint128_t
+        (:fpsr (:unsigned 32))
+        (:fpcr (:unsigned 32))))
+  (def-foreign-type nil
+      (:struct :darwin-sigaltstack64
+        (:ss-sp (:* :void))
+        (:ss-size (:unsigned 64))
+        (:ss-flags (:signed 32))))
+  (def-foreign-type nil
+      (:struct :darwin-mcontext64
+        (:es (:struct :darwin-arm-exception-state64))
+        (:ss (:struct :darwin-arm-thread-state64))
+        (:ns (:struct :darwin-arm-neon-state64))))
+  (def-foreign-type nil
+      (:struct :darwin-ucontext64
+        (:uc-onstack (:signed 32))
+        (:uc-sigmask (:signed 32))
+        (:uc-stack (:struct :darwin-sigaltstack64))
+        (:uc-link (:* (:struct :darwin-ucontext64)))
+        (:uc-mcsize (:signed 64))
+        (:uc-mcontext64 (:* (:struct :darwin-mcontext64))))))
+
+;; registers base: Darwin __ss.__x[0], else Linux mcontext.regs[0].
+(defmacro xp-registers-pointer (xp)
+  #+darwinarm64-target `(pref ,xp :darwin-ucontext64.uc-mcontext64.ss.x)
+  #-darwinarm64-target `(pref ,xp :ucontext_t.uc_mcontext.regs))
 
 (eval-when (:compile-toplevel :execute)
   ;; ppc:223-236.  registers = macptr to mcontext.regs[0].
   (defmacro with-xp-registers-and-gpr-offset ((xp register-number)
                                               (registers offset) &body body)
-    `(with-macptrs ((,registers (pref ,xp :ucontext_t.uc_mcontext.regs)))
+    `(with-macptrs ((,registers (xp-registers-pointer ,xp)))
        (let ((,offset (xp-gpr-offset ,register-number)))
          ,@body)))
 
@@ -98,18 +150,18 @@
 ;;; The saved PC is not a GPR on AArch64 (mcontext.pc, past the regs
 ;;; array); PPC read/wrote it as regs[PT_NIP] (ppc:391-398).
 (defun xp-pc-lisp (xp)
-  (with-macptrs ((registers (pref xp :ucontext_t.uc_mcontext.regs)))
+  (with-macptrs ((registers (xp-registers-pointer xp)))
     (values (%get-object registers xp-pc-offset-in-regs))))
 
 (defun (setf xp-pc-lisp) (value xp)
-  (with-macptrs ((registers (pref xp :ucontext_t.uc_mcontext.regs)))
+  (with-macptrs ((registers (xp-registers-pointer xp)))
     (%set-object registers xp-pc-offset-in-regs value)))
 
 ;;; NZCV lives in mcontext.pstate bits 31-28 (C = bit 29).  The ARM32
 ;;; port reads CPSR the same way to sign a failed nargs compare
 ;;; (arm-error-signal.lisp:216-220).
 (defun xp-pstate (xp)
-  (with-macptrs ((registers (pref xp :ucontext_t.uc_mcontext.regs)))
+  (with-macptrs ((registers (xp-registers-pointer xp)))
     (values (%%get-unsigned-longlong registers xp-pstate-offset-in-regs))))
 
 ;;; ppc:301-315, register names remapped (nargs is fixnum-tagged here
@@ -137,7 +189,7 @@
 (defconstant pc-offset-in-register-context xp-pc-offset-in-regs)
 
 (defun return-address-offset (xp fn machine-state-offset)
-  (with-macptrs ((regs (pref xp :ucontext_t.uc_mcontext.regs)))
+  (with-macptrs ((regs (xp-registers-pointer xp)))
     (if (functionp fn)
       ;; Since the fulltag-function removal (patch 0055) a function IS
       ;; its misc-tagged uvector (PPC64 shape); the

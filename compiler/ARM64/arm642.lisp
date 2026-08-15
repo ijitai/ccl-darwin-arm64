@@ -9729,6 +9729,26 @@
              (! %current-frame-ptr target)))
          (^))))
 
+;;; %foreign-stack-pointer — the with-variable-c-frame frame var (bound by
+;;; nx1-with-variable-c-frame to (%foreign-stack-pointer)) reads the current
+;;; SP as a boxed fixnum node.  Same shape as %current-frame-ptr.
+(defarm642 arm642-%foreign-stack-pointer %foreign-stack-pointer (seg vreg xfer)
+  (when vreg
+    (ensuring-node-target (target vreg)
+      (! %current-frame-ptr target)))
+  (^))
+
+;;; with-variable-c-frame — runtime-size C frame for the interpreted %ff-call.
+;;; Mirrors x862-with-variable-c-frame / ppc2-with-variable-c-frame: eval the
+;;; word-count, emit alloc-variable-c-frame (header+prevsp computed in the
+;;; vinsn), register a c-frame undo so a non-local exit discards the frame.
+(defarm642 arm642-with-variable-c-frame with-variable-c-frame (seg vreg xfer size body &aux
+                                                                   (old-stack (arm642-encode-stack)))
+  (let* ((reg (arm642-one-untargeted-reg-form seg size arm64::arg_z)))
+    (! alloc-variable-c-frame reg)
+    (arm642-open-undo $undo-arm64-c-frame)
+    (arm642-undo-body seg vreg xfer body old-stack)))
+
 (defun arm642-swap-unsigned-cond-bit (cr-bit)
   (cond ((eql cr-bit arm64::cond-hi) arm64::cond-lo)
         ((eql cr-bit arm64::cond-lo) arm64::cond-hi)

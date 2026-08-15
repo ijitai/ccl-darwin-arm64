@@ -34,22 +34,12 @@
 
 (defun make-callback-trampoline (index &optional info)
   (declare (ignorable info))
-  (let* ((p (%allocate-callback-pointer 32))
-         (addr (%lookup-subprim-address
-                #.(arm64::subprimitive-offset ".SPcallback"))))
-    (setf (%get-unsigned-long p 0)          ; movz x8,#lo16(index)
-          (logior #xd2800008 (ash (ldb (byte 16 0) index) 5))
-          (%get-unsigned-long p 4)          ; movk x8,#hi16(index),lsl #16
-          (logior #xf2a00008 (ash (ldb (byte 16 16) index) 5))
-          (%get-unsigned-long p 8)  #x58000090   ; ldr x16,.+16
-          (%get-unsigned-long p 12) #xd61f0200   ; br x16
-          (%get-unsigned-long p 16) #xd503201f   ; nop
-          (%get-unsigned-long p 20) #xd503201f   ; nop
-          (%%get-unsigned-longlong p 24) addr)
-    ;; I/D-cache sync — REQUIRED on arm64 before the stub is executed
-    ;; (same idiom as %make-code-executable, arm64-def.lisp).
-    (ff-call (%kernel-import #.arm64::kernel-import-makedataexecutable)
-             :address p
-             :unsigned-fullword 32
-             :void)
+  (let* ((p (%allocate-callback-pointer 32)))
+    ;; W^X: the trampoline write + RW->RX toggle happen in one atomic kernel
+    ;; entry (level-0 %make-callback-trampoline -> .SPmake_callback_trampoline
+    ;; -> C make_callback_trampoline), which computes the 6 instructions from
+    ;; `index', stores the .SPcallback address, flushes the I-cache and flips
+    ;; the MAP_JIT region to executable — so the caller's own code area is
+    ;; never left non-executable mid-run.
+    (%make-callback-trampoline p index)
     p))

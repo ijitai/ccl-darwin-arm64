@@ -458,7 +458,7 @@ spentry callback
         mov save1, arg_x
         /* Recover the thread context (ppc:5114-5124 get_tcr(1)). */
         mov x0, #1
-        bl get_tcr
+        bl C(get_tcr)
         mov rcontext, x0
         /* Stash the exact foreign sp for the return path. */
         mov imm0, sp
@@ -499,8 +499,13 @@ spentry callback
            must reload it.  Use the SAME idiom as start_lisp below: nil_value
            is patched into the C global lisp_nil at initial heap mapping (Matt
            2026-07-11), so it is NOT a compile-time immediate. */
+#ifdef DARWIN
+        adrp rnil, C(lisp_nil)@PAGE
+        ldr  rnil, [rnil, C(lisp_nil)@PAGEOFF]
+#else
         ldr rnil, =lisp_nil
         ldr rnil, [rnil]
+#endif
         /* Cover the foreign region below the enclosing lisp boundary -- the C
            caller's frames plus every register block this spentry just pushed --
            so the GC's linear cstack walk strides from here straight to
@@ -576,8 +581,10 @@ endsp callback
  * error-path negation (ppc:5441-5454) has no analog - imm0 carries the
  * raw result.  No FP args => the FPCR dance is skipped (as on PPC, which
  * doesn't touch the FPSCR in syscall). */
+/* Darwin syscall: number in x16, svc #0x80, error reported by carry flag
+ * with errno (positive) in x0 -- negate on error to match Linux's -errno. */
 #ifdef DARWIN
-#error "Darwin syscall convention not ported (svc #0x80 + carry-flag error protocol)"
+#else
 #endif
 /* Body = patch-0003 _SPffcall shape (same c_frame contract and
  * lisp<->foreign transition) with the AArch64 Linux syscall sequence
@@ -613,7 +620,11 @@ spentry syscall
                            exceptions; publish a clean slate (PPC zeroes
                            ffi_exception here, ppc:5415-5419) */
         /* Syscall number + up to 6 args (ppc:5424-5432 loads r3-r10 + r0). */
+#ifdef DARWIN
+        asr x16, arg_z, #fixnumshift            /* ppc:5432; Darwin: num=x16 */
+#else
         asr x8, arg_z, #fixnumshift             /* ppc:5432 unbox_fixnum     */
+#endif
         ldp x0, x1, [sp, #c_frame.params]
         ldp x2, x3, [sp, #(c_frame.params + 2*node_size)]
         ldp x4, x5, [sp, #(c_frame.params + 4*node_size)]
@@ -632,7 +643,14 @@ spentry syscall
         str temp0, [rcontext, #tcr.last_lisp_frame]
         mov temp0, #TCR_STATE_FOREIGN
         str temp0, [rcontext, #tcr.valence]
+#ifdef DARWIN
+        svc #0x80                               /* ppc:5433 sc (Darwin)      */
+        b.cc 1f
+        neg x0, x0                              /* carry set: errno -> -errno */
+1:
+#else
         svc #0                                  /* ppc:5433 sc               */
+#endif
         /* ---- return path (x0 = raw result / -errno) (ppc:5455-5489) ---- */
         ldr allocptr,  [rcontext, #tcr.save_allocptr]   /* ppc:5470-5472     */
         ldr allocbase, [rcontext, #tcr.save_allocbase]
@@ -855,8 +873,13 @@ C(start_lisp):
         mov     save2, xzr
         mov     save3, xzr
         /* rnil: from the C global (image loader patches nil_value). */
+#ifdef DARWIN
+        adrp    rnil, C(lisp_nil)@PAGE
+        ldr     rnil, [rnil, C(lisp_nil)@PAGEOFF]
+#else
         ldr     rnil, =lisp_nil
         ldr     rnil, [rnil]
+#endif
         /* Lisp stack/alloc state from the TCR (ppc:162-165). */
         ldr     vsp, [rcontext, #tcr.save_vsp]
         ldr     tsp, [rcontext, #tcr.save_tsp]

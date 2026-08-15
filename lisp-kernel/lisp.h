@@ -36,6 +36,10 @@
 #include "macros.h"
 
 extern int page_size, log2_page_size;
+#if defined(DARWIN) && defined(ARM64)
+extern BytePtr code_area_base, code_area_allocptr, code_area_limit;
+extern void init_code_area(void);
+#endif
 
 static inline natural
 _align_to_power_of_2(natural n, unsigned power)
@@ -113,6 +117,12 @@ install_signal_handler(int signo, void *handler, unsigned flags);
 
 extern void make_dynamic_heap_executable(void *, void *);
 extern void xMakeDataExecutable(BytePtr, natural);
+#if defined(DARWIN) && defined(ARM64)
+extern void xMakeDataWritable(void);
+extern void sys_icache_invalidate(void *start, size_t len);
+extern LispObj make_code_vector(LispObj words, natural count);
+extern void make_callback_trampoline(BytePtr p, natural index);
+#endif
 extern void lower_heap_start(BytePtr, area*);
 
 

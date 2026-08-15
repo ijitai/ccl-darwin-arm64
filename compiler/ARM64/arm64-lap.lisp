@@ -100,11 +100,19 @@
                                           target::subtag-function)))
          (i prefix-size))
     (declare (fixnum i constants-size))
-    (let* ((code-vector (%alloc-misc
-                         (+ code-vector-size prefix-size)
-                         (if cross-compiling
-                           target::subtag-xcode-vector
-                           arm64::subtag-code-vector))))
+    ;; W^X fix: when the compiler runs RESIDENT (target = host = arm64),
+    ;; the code vector must come from the MAP_JIT code area via a single
+    ;; atomic alloc+copy+RW->RX kernel call.  Allocating it via %alloc-misc
+    ;; (subtag-code-vector -> misc_alloc -> Misc_Alloc_Code) flips the whole
+    ;; JIT region RW (non-executable), so the compiler's own next fetch
+    ;; faults.  So we collect the instruction words into a dynamic-heap
+    ;; u32-vector and hand that to %make-code-vector, keeping the compiler
+    ;; executable the whole time.  Cross-compiling (x86 host) has no MAP_JIT
+    ;; code area, so it keeps the old %alloc-misc xcode-vector path.
+    (let* ((nwords (+ code-vector-size prefix-size))
+           (code-vector (if cross-compiling
+                          (%alloc-misc nwords target::subtag-xcode-vector)
+                          (%alloc-misc nwords arm64::subtag-u32-vector))))
       (dotimes (j prefix-size)
         (setf (uvref code-vector j) (pop prefix)))
       (do-dll-nodes (insn seg)
@@ -115,8 +123,7 @@
         (let ((imm (car pair))
               (k (cdr pair)))
           (setf (uvref constants-vector (1+ k)) imm)))
-      (setf (uvref constants-vector (1- constants-size)) lfbits
-            (uvref constants-vector 0) code-vector)
+      (setf (uvref constants-vector (1- constants-size)) lfbits)
       ;; %alloc-misc returns a misc-tagged vector; hand the resident
       ;; (non-cross) path to function-vector-to-function so both ends name
       ;; the conversion, as $fasl-clfun does.  NOT a retag on arm64: since
@@ -126,8 +133,12 @@
       ;; Cross-compile keeps the raw subtag-xfunction vector (the image
       ;; writer tags it).
       (if cross-compiling
-        constants-vector
-        (function-vector-to-function constants-vector)))))
+        (progn
+          (setf (uvref constants-vector 0) code-vector)
+          constants-vector)
+        (let ((codev (%make-code-vector code-vector nwords)))
+          (setf (uvref constants-vector 0) codev)
+          (function-vector-to-function constants-vector))))))
 
 (defun arm64-lap-pseudo-op (directive arg current)
   (ecase directive

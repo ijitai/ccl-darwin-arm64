@@ -27,6 +27,10 @@
 #include <errno.h>
 #include <stdio.h>
 #include <sys/stat.h>
+#ifdef DARWIN
+#include <mach/mach.h>
+#include <mach/mach_vm.h>
+#endif
 
 
 #include <fcntl.h>
@@ -444,6 +448,75 @@ describe_memfault(ExceptionInformation *xp, siginfo_t *info)
 #endif
     fprintf(dbgout, "received signal %d; faulting address: %p\n",
             info->si_signo, info->si_addr);
+    fprintf(dbgout, "  fault pc=0x%lx insn=0x%08x lr=0x%lx\n",
+            (unsigned long)xpPC(xp), (unsigned)*(pc)xpPC(xp),
+            (unsigned long)xpGPR(xp, 30));
+#ifdef DARWIN
+    {
+      mach_vm_address_t addr = (mach_vm_address_t)info->si_addr;
+      mach_vm_size_t size = 0;
+      vm_region_basic_info_data_64_t rinfo;
+      mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
+      mach_port_t obj;
+      kern_return_t kr = mach_vm_region(mach_task_self(), &addr, &size,
+                                        VM_REGION_BASIC_INFO_64,
+                                        (vm_region_info_t)&rinfo, &count, &obj);
+      fprintf(dbgout, "  fault-page: prot=0x%x maxprot=0x%x region=0x%llx+0x%llx (READ=1 WRITE=2 EXEC=4)\n",
+              (unsigned)rinfo.protection, (unsigned)rinfo.max_protection,
+              (unsigned long long)addr, (unsigned long long)size);
+      (void)kr;
+      {
+        /* Also dump protection of the current function's code vector page. */
+        natural fnv = xpGPR(xp, 7);
+        if (fulltag_of(fnv) == fulltag_misc) {
+          natural codev = *(natural *)(fnv - 4);
+          mach_vm_address_t ca = (mach_vm_address_t)codev;
+          mach_vm_size_t csz = 0;
+          vm_region_basic_info_data_64_t crinfo;
+          mach_msg_type_number_t cc = VM_REGION_BASIC_INFO_COUNT_64;
+          mach_port_t cobj;
+          kern_return_t ckr = mach_vm_region(mach_task_self(), &ca, &csz,
+                                             VM_REGION_BASIC_INFO_64,
+                                             (vm_region_info_t)&crinfo, &cc, &cobj);
+          fprintf(dbgout, "  fn-codev=0x%lx page prot=0x%x (region 0x%llx+0x%llx)\n",
+                  (unsigned long)codev, (unsigned)crinfo.protection,
+                  (unsigned long long)ca, (unsigned long long)csz);
+          (void)ckr;
+        }
+      }
+    }
+#endif
+    fprintf(dbgout, "  lr(x30)=0x%lx fn(x7)=0x%lx arg_z(x11)=0x%lx temp0(x12)=0x%lx temp1(x13)=0x%lx temp2(x14)=0x%lx temp3(x15)=0x%lx imm1(x1)=0x%lx imm0(x0)=0x%lx\n",
+            (unsigned long)xpGPR(xp, 30), (unsigned long)xpGPR(xp, 7),
+            (unsigned long)xpGPR(xp, 11), (unsigned long)xpGPR(xp, 12),
+            (unsigned long)xpGPR(xp, 13), (unsigned long)xpGPR(xp, 14),
+            (unsigned long)xpGPR(xp, 15), (unsigned long)xpGPR(xp, 1),
+            (unsigned long)xpGPR(xp, 0));
+    {
+      /* temp3 (x15) often holds a symbol whose fcell is being deref'd.
+         Dump pname (offset +1) and fcell (offset +17) to identify it. */
+      natural s = xpGPR(xp, 15);
+      if (fulltag_of(s) == fulltag_symbol) {
+        LispObj pname = *(natural *)(s + 1);
+        LispObj fcell = *(natural *)(s + 17);
+        LispObj codev = (fulltag_of(fcell) == fulltag_misc) ? *(natural *)(fcell - 4) : 0;
+        fprintf(dbgout, "  sym=0x%lx pname=0x%lx fcell=0x%lx codev=0x%lx name=",
+                (unsigned long)s, (unsigned long)pname,
+                (unsigned long)fcell, (unsigned long)codev);
+        if (fulltag_of(pname) == fulltag_misc) {
+          natural *p = (natural *)untag(pname);
+          natural hdr = p[0];
+          natural elem = hdr >> num_subtag_bits;
+          int i;
+          for (i = 0; i < (elem < 40 ? elem : 40); i++) {
+            natural w = p[1 + (i >> 1)];
+            int ch = (int)((i & 1) ? (w >> 32) : w) & 0xff;
+            fprintf(dbgout, "%c", (ch >= 32 && ch < 127) ? ch : '?');
+          }
+        }
+        fprintf(dbgout, "\n");
+      }
+    }
     describe_siginfo(info);
   }
 #endif

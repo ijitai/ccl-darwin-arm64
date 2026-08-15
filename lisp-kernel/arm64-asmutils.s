@@ -257,10 +257,38 @@ C(atomic_and):
  * NOT exported to avoid duplicate symbols. */
 
 /* ppc-asmutils.s:270-277 / arm-asmutils.s:196-199: a recognizable
- * do-nothing marker the exception path can resume through. */
+ * marker the exception path can resume through.  On Darwin the Mach
+ * exception handler puts this address in x30 (the return address) when it
+ * synthesizes a pseudo-signal frame, so when the lisp signal_handler
+ * "returns" it lands here, re-traps, and the handler recognizes
+ * pc == pseudo_sigreturn and performs the real thread-state restore
+ * (do_pseudo_sigreturn).  udf raises EXC_BAD_INSTRUCTION; the exact imm16
+ * is irrelevant -- recognition is by ADDRESS.  On Linux this routine is
+ * never called, so it stays a plain return. */
         .globl C(pseudo_sigreturn)
 C(pseudo_sigreturn):
+#ifdef DARWIN
+        udf #0xffff
+        b    C(pseudo_sigreturn)
+#else
         ret
+#endif
+
+#ifdef DARWIN
+/* ppc/x86 precedent: the raw sigreturn syscall trampoline, used by the
+ * POSIX signal handlers (suspend/resume/interrupt/kill) via SIGRETURN().
+ * SYS_sigreturn = 184 = 0xb8; the 0x2000000 class marker matches the
+ * proven x86-64 CCL encoding (0x20000b8).  Args (ucontext_t*, style) are
+ * already in x0, x1. */
+        .globl C(darwin_sigreturn)
+        .globl C(sigreturn)
+C(darwin_sigreturn):
+C(sigreturn):
+        mov  x16, #0xb8
+        movk x16, #0x200, lsl #16
+        svc  #0x80
+        ret
+#endif
 
 /* Barrier helpers (ARM32 set, arm-asmutils.s:255-266). */
         .globl C(dmb)

@@ -76,3 +76,34 @@ _SP\name:
         .macro extract_header dest, miscobj
         ldur \dest, [\miscobj, #misc_header_offset]
         .endm
+
+#if defined(DARWIN) && defined(ARM64)
+        // Like Misc_Alloc, but allocates from the MAP_JIT code area
+        // (code_area_allocptr/code_area_limit globals) instead of the
+        // dynamic heap.  First flips the JIT pages writable.  The C call
+        // clobbers x0/x1 (header/size) and x30, so all are saved on the
+        // C stack (16-byte aligned for the AAPCS64 call).  temp2/temp3
+        // are clobbered.
+        .macro Misc_Alloc_Code dest, header, size
+        stp  x0, x1, [sp, #-32]!
+        stp  x29, x30, [sp, #16]
+        bl   C(xMakeDataWritable)
+        ldp  x29, x30, [sp, #16]
+        ldp  x0, x1, [sp], #32
+        sub \size, \size, #fulltag_misc
+        adrp temp3, C(code_area_allocptr)@PAGE
+        ldr  temp3, [temp3, C(code_area_allocptr)@PAGEOFF]
+        sub  temp3, temp3, \size
+        adrp temp2, C(code_area_limit)@PAGE
+        ldr  temp2, [temp2, C(code_area_limit)@PAGEOFF]
+        cmp  temp3, temp2
+        b.hi .Lmcode\@
+        uuo_alloc
+.Lmcode\@:
+        str  \header, [temp3, #misc_header_offset]
+        mov  \dest, temp3
+        bic  temp3, temp3, #fulltagmask
+        adrp temp2, C(code_area_allocptr)@PAGE
+        str  temp3, [temp2, C(code_area_allocptr)@PAGEOFF]
+        .endm
+#endif

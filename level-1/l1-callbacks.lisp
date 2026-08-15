@@ -126,8 +126,16 @@
   #-windows-target
   (#_mmap (%null-ptr)
           (get-page-size)
-          (logior #$PROT_READ #$PROT_WRITE #$PROT_EXEC)
-          (logior #$MAP_PRIVATE #$MAP_ANON)
+          ;; macOS arm64 W^X: the callback page must be MAP_JIT mapped WITH
+          ;; PROT_EXEC so pthread_jit_write_protect_np(1) can flip it RX.
+          ;; (A no-PROT_EXEC MAP_JIT page can never become executable.)  The
+          ;; page comes up write-protected; the trampoline is written by the
+          ;; kernel (C make_callback_trampoline) which flips RW->RX atomically,
+          ;; so Lisp never writes the page directly.
+          #+darwinarm64-target (logior #$PROT_READ #$PROT_WRITE #$PROT_EXEC)
+          #-darwinarm64-target (logior #$PROT_READ #$PROT_WRITE #$PROT_EXEC)
+          (logior #$MAP_PRIVATE #$MAP_ANON
+                  #+darwinarm64-target #x800)
           -1
           0)
   #+windows-target

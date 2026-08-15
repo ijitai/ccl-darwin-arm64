@@ -92,8 +92,10 @@
    (64 (image-write-doubleword n f))))
 
 (defun image-align-output-position (f)
-  (file-position f (logand (lognot 4095)
-			   (+ 4095 (file-position f)))))
+  ;; 16K alignment: macOS arm64 mmap requires page-aligned file offsets, and
+  ;; 16K is also a multiple of the 4K pages other targets use.
+  (file-position f (logand (lognot 16383)
+			   (+ 16383 (file-position f)))))
 
 
 (defun target-image-abi-version ()
@@ -112,7 +114,7 @@
                        :if-exists :supersede
                        :element-type '(unsigned-byte 8))
       (let* ((nsections (length spaces))
-             (header-pos (- 4096 (+ *image-header-size*
+             (header-pos (- 16384 (+ *image-header-size*
                                     (* nsections *image-section-size*)))))
         (file-position f header-pos)
         (image-write-fullword image-sig0 f)

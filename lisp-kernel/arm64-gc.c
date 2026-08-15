@@ -892,6 +892,7 @@ rmark(LispObj n)                                     /* ppc-gc.c:476-787 */
          where in the object graph the walk was, prev's FULL word says what it
          tried to climb into, and the root `n' says which mark_root call owns
          the walk. */
+      fprintf(dbgout, ";; GC-RMARK-DEFAULT tag=%d prev=0x" LISP " this=0x" LISP " next=0x" LISP "\n", tag_n, (LispObj)prev, (LispObj)this, (LispObj)next);
       Bug(NULL, "rmark FSM: unexpected prev fulltag %d (not one of "
                 "cons/3 tag_4/4 symbol/7 imm_1/10 nil/11 misc/12 "
                 "symbol-flip/15)\n"

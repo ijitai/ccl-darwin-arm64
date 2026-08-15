@@ -1552,7 +1552,7 @@ thread_init_tcr(TCR *tcr, void *stack_base, natural stack_size)
   TCR_AUX(tcr)->cs_area = a;
   a->owner = tcr;
 #if defined(ARM) || defined(ARM64)
-  tcr->last_lisp_frame = (natural)(a->high);
+  tcr->last_lisp_frame = (LispObj *)(a->high);
 #endif
   TCR_AUX(tcr)->cs_limit = (LispObj)ptr_to_lispobj(a->softlimit);
 #ifdef LINUX

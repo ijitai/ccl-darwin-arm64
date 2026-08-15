@@ -37,6 +37,16 @@
 #ifndef WINDOWS
 #include <sys/mman.h>
 
+/* macOS arm64 enforces W^X: a mapping may be writable or executable, not
+   both.  CCL's dynamic heap is data (code lives in the pure/READONLY area
+   in a cross-compiled image), so commit it writable, not writable+exec.
+   (A full JIT would need a separate MAP_JIT code area.) */
+#if defined(DARWIN) && defined(ARM64)
+#define COMMIT_PROTECTION MEMPROTECT_RW
+#else
+#define COMMIT_PROTECTION MEMPROTECT_RWX
+#endif
+
 /*
  * FreeBSD 11.0, at least, doesn't define this any more. It has never
  * actually implemented it.
@@ -44,6 +54,34 @@
 #ifndef MAP_NORESERVE
 #define MAP_NORESERVE 0
 #endif
+#endif
+
+/* ------------------------------------------------------------------- */
+/* macOS arm64 W^X: a code vector must live in executable memory, but the
+   dynamic heap is data (writable, not executable).  Give code vectors a
+   dedicated MAP_JIT area, toggled RW (to write) / RX (to execute) with
+   pthread_jit_write_protect_np.  The dynamic heap stays plain RW. */
+#if defined(DARWIN) && defined(ARM64)
+#define CODE_AREA_SIZE (16 << 20)   /* 16 MB of code vectors */
+BytePtr code_area_base = NULL;
+BytePtr code_area_allocptr = NULL;
+BytePtr code_area_limit = NULL;
+
+void
+init_code_area(void)
+{
+  code_area_base = mmap(NULL, CODE_AREA_SIZE,
+                        PROT_READ|PROT_WRITE|PROT_EXEC,
+                        MAP_PRIVATE|MAP_ANON|MAP_JIT, -1, 0);
+  if (code_area_base == MAP_FAILED) {
+    Fatal(":   couldn't map JIT code area", "");
+  }
+  /* JIT pages come up write-protected; allow writes so code vectors can
+     be allocated before the first MakeDataExecutable. */
+  pthread_jit_write_protect_np(0);
+  code_area_allocptr = code_area_base + CODE_AREA_SIZE;
+  code_area_limit = code_area_base;
+}
 #endif
 
 #define DEBUG_MEMORY 0
@@ -148,7 +186,7 @@ CommitMemory (LogicalAddress start, natural len)
   void *addr;
 
   for (i = 0; i < 3; i++) {
-    addr = mmap(start, len, MEMPROTECT_RWX, MAP_PRIVATE|MAP_ANON|MAP_FIXED, -1, 0);
+    addr = mmap(start, len, COMMIT_PROTECTION, MAP_PRIVATE|MAP_ANON|MAP_FIXED, -1, 0);
     if (addr == start) {
       return true;
     } else {
@@ -217,7 +255,7 @@ MapMemoryForStack(natural nbytes)
 #ifdef WINDOWS
   return VirtualAlloc(0, nbytes, MEM_RESERVE|MEM_COMMIT, MEMPROTECT_RWX);
 #else
-  return mmap(NULL, nbytes, MEMPROTECT_RWX, MAP_PRIVATE|MAP_ANON, -1, 0);
+  return mmap(NULL, nbytes, COMMIT_PROTECTION, MAP_PRIVATE|MAP_ANON, -1, 0);
 #endif
 }
 
@@ -338,7 +376,18 @@ MapFile(LogicalAddress addr, natural pos, natural nbytes, int permissions, int f
   return true;
 #endif
 #else
+#ifdef DARWIN
+  /* macOS forbids file-backed executable mappings (and W^X).  Map the file
+     read-write, then mprotect to the requested (possibly exec) mode. */
+  if (mmap(addr, nbytes, MEMPROTECT_RW, MAP_PRIVATE|MAP_FIXED, fd, pos) == MAP_FAILED)
+    return false;
+  if ((permissions != MEMPROTECT_RW) &&
+      (mprotect(addr, nbytes, permissions) != 0))
+    return false;
+  return true;
+#else
   return mmap(addr, nbytes, permissions, MAP_PRIVATE|MAP_FIXED, fd, pos) != MAP_FAILED;
+#endif
 #endif
 }
 

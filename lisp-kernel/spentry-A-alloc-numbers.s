@@ -474,8 +474,16 @@ spentry misc_alloc
         lsr     imm1, imm1, #1                     /* 8-bit: n*1 */
 1:      add     imm1, imm1, #(node_size + dnode_size - 1)   /* dnode_align(imm1,imm1,node_size) */
         and     imm1, imm1, #0xfffffffffffffff0
+#if defined(DARWIN) && defined(ARM64)
+        cmp     imm3, #subtag_code_vector
+        b.eq    8f
+#endif
         Misc_Alloc arg_z, imm0, imm1
         ret
+#if defined(DARWIN) && defined(ARM64)
+8:      Misc_Alloc_Code arg_z, imm0, imm1
+        ret
+#endif
 2:      add     imm1, arg_y, #(7 << fixnumshift)
         lsr     imm1, imm1, #(3 + fixnumshift)
         b       1b
@@ -487,6 +495,40 @@ spentry misc_alloc
         mov     nargs, #(3 << fixnumshift)      /* ppc:3479 set_nargs(3)        */
         b       _SPksignalerr                   /* ppc:3480                     */
 endsp misc_alloc
+
+/* W^X fix: allocate a code vector in the MAP_JIT code area, copy the
+ * instruction words from a dynamic-heap u32-vector, and flip the area
+ * RW->RX in one atomic C call -- so the resident compiler (which itself
+ * RUNS from the code area) is never executing while its own pages are
+ * non-executable.  The alternative (misc_alloc's Misc_Alloc_Code macro)
+ * leaves the whole JIT region RW, so the compiler faults on its next fetch.
+ * args: arg_y = u32-vector of instruction words, arg_z = fixnum word count.
+ * returns arg_z = the tagged code vector.
+ */
+spentry make_code_vector
+        stp     x29, x30, [sp, #-16]!           /* save fp+lr across the C call */
+        mov     x0, arg_y                       /* x0 = words (LispObj) */
+        asr     x1, arg_z, #fixnumshift         /* x1 = raw word count */
+        bl      C(make_code_vector)             /* x0 = tagged code vector */
+        mov     arg_z, x0                       /* arg_z = code vector */
+        ldp     x29, x30, [sp], #16             /* restore fp+lr */
+        ret
+endsp make_code_vector
+
+/* W^X fix: write a 32-byte callback trampoline at a macptr (arg_y) and flip
+ * the MAP_JIT region RW->RX atomically.  arg_z = raw callback index (fixnum).
+ * The C helper does the write + icache flush + RX toggle in one entry, so the
+ * Lisp caller (which runs from the MAP_JIT code area) never executes while its
+ * own pages are non-executable.  Mirrors make_code_vector.
+ */
+spentry make_callback_trampoline
+        stp     x29, x30, [sp, #-16]!           /* save fp+lr across the C call */
+        ldur    x0, [arg_y, #macptr.address]    /* x0 = raw pointer from macptr */
+        asr     x1, arg_z, #fixnumshift         /* x1 = raw callback index */
+        bl      C(make_callback_trampoline)     /* void; writes + RW->RX */
+        ldp     x29, x30, [sp], #16             /* restore fp+lr */
+        ret
+endsp make_callback_trampoline
 
 /* Allocate a uvector on the tstack (push a tsp frame and heap-cons the
  * object via misc_alloc if there's no room).  Same (arg_y=count,

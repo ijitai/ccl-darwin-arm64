@@ -252,8 +252,12 @@
       (assert (>= xt #x10))
       (assert (not (member (logand xt fulltagmask) non-fixnum-low-nibbles))))))
 
-(defconstant canonical-nil-value (+ #x13000 fulltag-nil)) ;xxx nil can't be a constant
-(defconstant canonical-t-value (+ #x13020 fulltag-symbol)) ;xxx see above
+;; Static space at a HIGH address (0x400000000000): macOS arm64 forbids
+;; mapping low addresses (page-zero + 16K pages), and the nil-relative
+;; (rnil) design doesn't need them.  nil sits 4K into the static space
+;; (see image.c load_openmcl_image AREA_STATIC), t 0x20 past nil.
+(defconstant canonical-nil-value (+ #x400000001000 fulltag-nil))
+(defconstant canonical-t-value (+ #x400000001020 fulltag-symbol))
 (defconstant misc-bias fulltag-misc)
 (defconstant cons-bias fulltag-cons)
 (defconstant t-offset (- canonical-t-value canonical-nil-value))
@@ -1391,7 +1395,13 @@
                           ;; catch/throw/unwind-protect/progv cluster (w10;
                           ;; spentry-C-bind-catch-throw.s:319/326/334/1663/
                           ;; 343/440/550, spentry-B:478/1044)
-                          (defsubprim .SPnmkunwind)))))))
+                          (defsubprim .SPnmkunwind)
+                          ;; W^X fix (spentry-A make_code_vector): code-area
+                          ;; alloc + RW->RX toggle in one atomic kernel call.
+                          (defsubprim .SPmake-code-vector)
+                          ;; W^X fix (spentry-A make_callback_trampoline):
+                          ;; callback-page trampoline write + RW->RX toggle.
+                          (defsubprim .SPmake-callback-trampoline)))))))
 
 ;;; The extension above rebinds the arm64::*subprims* VARIABLE, but
 ;;; ccl::subprim-name->offset resolves through the arch STRUCT's

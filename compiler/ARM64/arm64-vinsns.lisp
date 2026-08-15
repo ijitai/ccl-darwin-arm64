@@ -300,12 +300,12 @@
 (define-arm64-vinsn (alloc-variable-c-frame) (()
                                               ((n-c-args :lisp))
                                               ((header (:u64 #.arm64::imm0))
-                                               (size :u64)
-                                               (prevsp (:imm #.arm64::imm1))))
-  (add size n-c-args (:$ '6))        ;+ header + prevsp + 4-word frame
+                                               (size (:u64 #.arm64::imm3))
+                                               (prevsp (:u64 #.arm64::imm1))))
+  (add size n-c-args (:$ (ash 6 arm64::fixnumshift))) ;+ header + prevsp + 4-word frame (6 words = 48 bytes)
   (add size size (:$ (:apply 1- arm64::dnode-size))) ;round byte size up...
   (and size size (:$ (:apply - arm64::dnode-size)))  ; ...to a dnode boundary
-  (sub header size (:$ '1))          ;element count (omit header word)
+  (sub header size (:$ arm64::node-size)) ;element count = size/8 - 1 (omit header word)
   ;; shift already-fixnum-scaled element count into place
   (lsl header header (:$ (:apply - arm64::num-subtag-bits arm64::fixnumshift)))
   (add header header (:$ arm64::subtag-u64-vector))
@@ -3536,7 +3536,10 @@
 ;;; match this layout when it lands.
 (define-arm64-vinsn make-stack-cons (((dest :lisp))
                                      ((car :lisp) (cdr :lisp)))
-  (str tsp (:@! tsp (:$ -32)))
+  ;; str tsp,[tsp,#-N]! is unpredictable on arm64 (source == writeback
+  ;; base); split into a non-writeback store + explicit decrement.
+  (stur tsp (:@ tsp (:$ -32)))
+  (sub tsp tsp (:$ 32))
   (str xzr (:@ tsp (:$ 8)))
   (str xzr (:@ tsp (:$ 16)))
   (str xzr (:@ tsp (:$ 24)))
@@ -4139,7 +4142,10 @@
                                    ((address :u64))
                                    ((header :u64)))
   (movz header (:$ arm64::macptr-header))
-  (str tsp (:@! tsp (:$ -48)))
+  ;; str tsp,[tsp,#-N]! is unpredictable on arm64 (source == writeback
+  ;; base); split into a non-writeback store + explicit decrement.
+  (stur tsp (:@ tsp (:$ -48)))
+  (sub tsp tsp (:$ 48))
   (str xzr (:@ tsp (:$ 8)))
   (str header (:@ tsp (:$ (+ 16 arm64::fulltag-misc arm64::macptr.header))))
   (str address (:@ tsp (:$ (+ 16 arm64::fulltag-misc arm64::macptr.address))))
@@ -4615,7 +4621,10 @@
                                       ((closed :lisp))
                                       ((header :u64)))
   (movz header (:$ arm64::value-cell-header))
-  (str tsp (:@! tsp (:$ -32)))
+  ;; str tsp,[tsp,#-N]! is unpredictable on arm64 (source == writeback
+  ;; base); split into a non-writeback store + explicit decrement.
+  (stur tsp (:@ tsp (:$ -32)))
+  (sub tsp tsp (:$ 32))
   (str xzr (:@ tsp (:$ 8)))
   (str header (:@ tsp (:$ (+ 16 arm64::fulltag-misc arm64::misc-header-offset))))
   (str closed (:@ tsp (:$ (+ 16 arm64::fulltag-misc arm64::misc-data-offset))))

@@ -1561,6 +1561,8 @@ Will differ from *compiling-file* during an INCLUDE")
 
 (defun fasl-dump-block (gnames goffsets forms hash)
   (let ((etab-size (hash-table-count hash)))
+    (format t "~&;; DEBUG fasl-dump-block: *target-backend*=~a *fasl-backend*=~a version=~x~%"
+            (backend-name *target-backend*) (backend-name *fasl-backend*) (target-fasl-version))
     (fasl-out-word (target-fasl-version))          ; Word 0
     (fasl-out-long  0)
     (fasl-out-byte $fasl-vetab-alloc)

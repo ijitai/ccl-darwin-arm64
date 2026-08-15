@@ -43,8 +43,10 @@ DEFCONST(nsaveregs, 4)
 DEFCONST(call_arguments_limit, 0x10000)
 DEFCONST(heap_segment_size, 0x20000)
 DEFCONST(log2_heap_segment_size, 17)
-// XXX - This is not going to work on macOS
-DEFCONST(STATIC_BASE_ADDRESS, 0x03fff000)
+// High static-space address: macOS arm64 forbids low-address mapping
+// (16K pages + page-zero), and the rnil-relative design doesn't need them.
+// 0x400000000000 is 16K-aligned and below the malloc regions.
+DEFCONST(STATIC_BASE_ADDRESS, 0x400000000000)
 
 /* lisp names for registers */
 #ifdef __ASSEMBLER__

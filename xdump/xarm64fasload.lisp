@@ -171,7 +171,7 @@
    :nil-relative-symbols arm64::*nilreg-relative-symbols*
    :static-space-init-function 'arm64-initialize-static-space
    :purespace-reserve (ash 128 30)
-   :static-space-address (+ (ash 1 16) (ash 2 12))
+   :static-space-address #x400000000000
 ))
 
 (add-xload-backend *linuxarm64-xload-backend*)
@@ -186,11 +186,11 @@
    :default-startup-file-name "level-1.da64fsl"
    :subdirs '("ccl:level-0;ARM64;")
    :compiler-target-name :darwinarm64
-   :image-base-address 0 ;xxx
+   :image-base-address #x300000000000
    :nil-relative-symbols arm64::*nilreg-relative-symbols*
    :static-space-init-function 'arm64-initialize-static-space
    :purespace-reserve (ash 128 30)
-   :static-space-address 0 ;xxx
+   :static-space-address #x400000000000
 ))
 
 (add-xload-backend *darwinarm64-xload-backend*)
