@@ -1075,6 +1075,10 @@ handle_protection_violation(ExceptionInformation *xp, siginfo_t *info, TCR *tcr,
        carries the fault address directly. */
     addr = (BytePtr) ((natural) (xpFaultAddress(xp)));
   }
+  if (getenv("CCL_LOG_FAULTS")) {
+    fprintf(dbgout, ";; handle_protection_violation: addr=0x%lx pc=0x%lx old_valence=%d\n",
+            (unsigned long)addr, (unsigned long)xpPC(xp), old_valence);
+  }
 
   if (addr && (addr == tcr->safe_ref_address)) {  /* ppc:942-947 */
     adjust_exception_pc(xp,4);
@@ -1111,6 +1115,11 @@ handle_protection_violation(ExceptionInformation *xp, siginfo_t *info, TCR *tcr,
     if (!((fulltag_of(cmain) == fulltag_misc) &&
           (header_subtag(header_of(cmain)) == subtag_macptr))) {
       return pv_cold_load_fatal(xp, addr, is_write_fault(xp,info));
+    }
+    if (getenv("CCL_LOG_FAULTS")) {
+      fprintf(dbgout, ";; lisp fault: pc=0x%lx addr=0x%lx write=%d -> callback_for_trap(SIGBUS)\n",
+              (unsigned long)xpPC(xp), (unsigned long)addr,
+              is_write_fault(xp, info));
     }
     callback_for_trap(cmain, xp, (pc)xpPC(xp), SIGBUS, (natural)addr, is_write_fault(xp,info));
   }
@@ -2855,24 +2864,35 @@ catch_mach_exception_raise_state(mach_port_t exception_port,
         FILE *fs = fopen("/tmp/faultsp.bin", "wb");
         if (fs) { fwrite((void *)(ts->__sp), 1, 128, fs); fclose(fs); }
       } }
-    fprintf(dbgout, ";; BADACCESS pc=0x%lx insn=0x%08x lr=0x%llx sp=0x%llx x0=0x%llx x1=0x%llx x2=0x%llx x3=0x%llx x7=0x%llx x10=0x%llx x10ft=0x%lx x10hdr=0x%llx x10s0=0x%llx x10cdr=0x%llx x11=0x%llx x22=0x%llx x24=0x%llx x25=0x%llx x26=0x%llx x28=0x%llx x29=0x%llx\n",
-            fpc, (unsigned)*(unsigned int *)fpc,
-            (long long)ts->__lr, (long long)ts->__sp, (long long)ts->__x[0], (long long)ts->__x[1],
-            (long long)ts->__x[2], (long long)ts->__x[3], (long long)ts->__x[7],
-            (long long)ts->__x[10], (long)(ts->__x[10] & 0xf),
-            (long long)*(unsigned long long *)(ts->__x[10] - 12),
-            (long long)*(unsigned long long *)(ts->__x[10] - 4),
-            (long long)*(unsigned long long *)(*(unsigned long long *)(ts->__x[10] - 4) - 3),
-            (long long)ts->__x[11], (long long)ts->__x[22],
-            (long long)ts->__x[24], (long long)ts->__x[25], (long long)ts->__x[26],
-            (long long)ts->__x[28], (long long)ts->__fp);
+    { natural x10v = ts->__x[10];
+      int x10ok = ((x10v >= 0x300000000000UL) && (x10v < 0x310000000000UL));
+      fprintf(dbgout, ";; BADACCESS pc=0x%lx insn=0x%08x lr=0x%llx sp=0x%llx x0=0x%llx x1=0x%llx x2=0x%llx x3=0x%llx x7=0x%llx x10=0x%llx x10ft=0x%lx%s",
+              fpc, (unsigned)*(unsigned int *)fpc,
+              (long long)ts->__lr, (long long)ts->__sp, (long long)ts->__x[0], (long long)ts->__x[1],
+              (long long)ts->__x[2], (long long)ts->__x[3], (long long)ts->__x[7],
+              (long long)x10v, (long)(x10v & 0xf),
+              x10ok ? "" : " (not-heap; x10 detail skipped)\n");
+      if (x10ok) {
+        fprintf(dbgout, "x10hdr=0x%llx x10s0=0x%llx x10cdr=0x%llx\n",
+                (long long)*(unsigned long long *)(x10v - 12),
+                (long long)*(unsigned long long *)(x10v - 4),
+                (long long)*(unsigned long long *)(*(unsigned long long *)(x10v - 4) - 3));
+      }
+      fprintf(dbgout, "x11=0x%llx x22=0x%llx x24=0x%llx x25=0x%llx x26=0x%llx x28=0x%llx x29=0x%llx\n",
+              (long long)ts->__x[11], (long long)ts->__x[22],
+              (long long)ts->__x[24], (long long)ts->__x[25], (long long)ts->__x[26],
+              (long long)ts->__x[28], (long long)ts->__fp);
+    }
     { natural fnv = ts->__x[7];
-      unsigned long long f76 = *(unsigned long long *)(fnv + 76);
-      unsigned long long f84 = *(unsigned long long *)(fnv + 84);
-      fprintf(dbgout, ";;   fn[76]=0x%llx (ft=%lx) fn[84]=0x%llx (ft=%lx)\n",
-              f76, (long)(f76 & 0xf), f84, (long)(f84 & 0xf));
-      if ((f76 & 0xf) == 7) fprintf(dbgout, ";;     f76 pname=0x%llx\n", *(unsigned long long *)(f76 + 1));
-      if ((f84 & 0xf) == 7) fprintf(dbgout, ";;     f84 pname=0x%llx\n", *(unsigned long long *)(f84 + 1));
+      int fnok = ((fnv >= 0x300000000000UL) && (fnv < 0x310000000000UL));
+      if (fnok) {
+        unsigned long long f76 = *(unsigned long long *)(fnv + 76);
+        unsigned long long f84 = *(unsigned long long *)(fnv + 84);
+        fprintf(dbgout, ";;   fn[76]=0x%llx (ft=%lx) fn[84]=0x%llx (ft=%lx)\n",
+                f76, (long)(f76 & 0xf), f84, (long)(f84 & 0xf));
+        if ((f76 & 0xf) == 7) fprintf(dbgout, ";;     f76 pname=0x%llx\n", *(unsigned long long *)(f76 + 1));
+        if ((f84 & 0xf) == 7) fprintf(dbgout, ";;     f84 pname=0x%llx\n", *(unsigned long long *)(f84 + 1));
+      }
     }
     { natural *vp = (natural *)ts->__x[25]; /* vsp = x25 */
       int i;
