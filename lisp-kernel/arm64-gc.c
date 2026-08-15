@@ -1,4 +1,4 @@
-﻿/* SPDX-License-Identifier: Apache-2.0 */
+/* SPDX-License-Identifier: Apache-2.0 */
 
 /* PPC64 LINE-PORT (source: vendor/ccl/lisp-kernel/ppc-gc.c)
  *
@@ -106,14 +106,38 @@
  * ~400MB memset ran off the mapping and the SEGV handler looped at
  * 100% CPU).  Any claimed extent beyond the GC area is proof of a
  * corrupt header - die loudly at the object, not in the storm. */
+static LispObj last_rmarks[8];
+static natural last_rmark_idx = 0;
+
 static void
 check_marked_extent(LispObj n, natural dnode, natural suffix_dnodes)
 {
   if ((dnode + 1 + suffix_dnodes) > GCndnodes_in_area) {
-    Bug(NULL, "GC: object 0x%lx (dnode 0x%lx) claims 0x%lx suffix dnodes"
-        " but the area has only 0x%lx - corrupt uvector header?",
+    LispObj *base = (LispObj *)ptr_from_lispobj(untag(n));
+    LispObj header = *(LispObj *)base;
+    char buf[1024];
+    int used = 0, k;
+    used += snprintf(buf + used, sizeof(buf) - used,
+        "GC: object 0x%lx (dnode 0x%lx) claims 0x%lx suffix dnodes"
+        " but the area has only 0x%lx - corrupt uvector header?\n"
+        "  fulltag=0x%lx header=0x%lx subtag=0x%lx count=0x%lx align16=%d\n",
         (unsigned long)n, (unsigned long)dnode,
-        (unsigned long)suffix_dnodes, (unsigned long)GCndnodes_in_area);
+        (unsigned long)suffix_dnodes, (unsigned long)GCndnodes_in_area,
+        (unsigned long)fulltag_of(n), (unsigned long)header,
+        (unsigned long)header_subtag(header),
+        (unsigned long)header_element_count(header),
+        ((n & 15) == 0));
+    for (k = -2; k < 8 && used < (int)sizeof(buf) - 64; k++)
+      used += snprintf(buf + used, sizeof(buf) - used,
+          "  base[%d] = 0x%lx\n", k, (unsigned long)base[k]);
+    used += snprintf(buf + used, sizeof(buf) - used, "  last rmark inputs:\n");
+    for (k = 0; k < 8 && used < (int)sizeof(buf) - 64; k++)
+      used += snprintf(buf + used, sizeof(buf) - used,
+          "    rmark[%d] = 0x%lx\n", k,
+          (unsigned long)last_rmarks[(last_rmark_idx + 8 - k) & 7]);
+    fprintf(stderr, "GC-EXTENT-ABORT:\n%s\n", buf);
+    fflush(stderr);
+    Bug(NULL, "%s", buf);
   }
 }
 
@@ -694,6 +718,8 @@ rmark(LispObj n)                                     /* ppc-gc.c:476-787 */
   int tag_n = fulltag_of(n);
   bitvector markbits = GCmarkbits;
   natural dnode, bits, *bitsp, mask;
+
+  last_rmarks[(last_rmark_idx++) & 7] = n;
 
   if (!is_node_fulltag(tag_n)) {
     return;

@@ -2839,8 +2839,10 @@ catch_mach_exception_raise_state(mach_port_t exception_port,
     *ts = (native_thread_state_t *)in_state,
     *out_ts = (native_thread_state_t *)out_state;
 
-  fprintf(dbgout, ";; MACH-EXC type=%d code0=0x%llx pc=0x%llx\n",
-          exception, (long long)code0, (long long)ts->__pc);
+  if (getenv("CCL_LOG_MACH_EXC")) {
+    fprintf(dbgout, ";; MACH-EXC type=%d code0=0x%llx pc=0x%llx\n",
+            exception, (long long)code0, (long long)ts->__pc);
+  }
   if (exception == EXC_BAD_ACCESS) {
     natural fpc = (natural)ts->__pc;
     { static int first_lr = 1;

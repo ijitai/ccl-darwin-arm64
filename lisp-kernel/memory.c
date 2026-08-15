@@ -62,7 +62,11 @@
    dedicated MAP_JIT area, toggled RW (to write) / RX (to execute) with
    pthread_jit_write_protect_np.  The dynamic heap stays plain RW. */
 #if defined(DARWIN) && defined(ARM64)
-#define CODE_AREA_SIZE (16 << 20)   /* 16 MB of code vectors */
+#define CODE_AREA_SIZE (512 << 20)  /* 512 MB of code vectors (virtual; MAP_JIT
+                                       pages cost nothing until touched).  16MB
+                                       exhausted running the ANSI suite: each of
+                                       the 21k tests compiles code that the test
+                                       entries keep alive. */
 BytePtr code_area_base = NULL;
 BytePtr code_area_allocptr = NULL;
 BytePtr code_area_limit = NULL;
