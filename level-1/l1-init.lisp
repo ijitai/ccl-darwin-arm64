@@ -258,7 +258,14 @@ methods that are marked as being predefined signal continuable errors.")
 (defparameter *level-1-loaded* nil)     ; set t by l1-boot
 (defparameter *save-definitions* nil)
 (defparameter *save-local-symbols* t)
-(defparameter *save-source-locations* T
+;; PORT-NOTE (darwinarm64): default NIL instead of the stock T.  The arm64
+;; reader's source-note recording path (l1-reader %parse-expression/read-list,
+;; cross-compiled by the host) corrupts the heap while loading files (observed:
+;; a plist-shaped run of {cons, self} pointers at a misc object's header, GC
+;; 'corrupt uvector header' aborts, source-text bytes surfacing as objects in
+;; method-combination tests).  Until the reader miscompile is fixed, recording
+;; source locations during LOAD corrupts live data, so keep it off.
+(defparameter *save-source-locations* NIL
   "Controls whether source location information is saved, both for definitions (names) and
 in function objects.
 
