@@ -2843,11 +2843,11 @@ catch_mach_exception_raise_state(mach_port_t exception_port,
           exception, (long long)code0, (long long)ts->__pc);
   if (exception == EXC_BAD_ACCESS) {
     natural fpc = (natural)ts->__pc;
-    FILE *ff = fopen("/tmp/faultcode.bin", "wb");
-    if (ff) { fwrite((void *)(fpc - 64), 1, 512, ff); fclose(ff); }
     { static int first_lr = 1;
       if (first_lr) {
         first_lr = 0;
+        FILE *ff = fopen("/tmp/faultcode.bin", "wb");
+        if (ff) { fwrite((void *)(fpc - 96), 1, 768, ff); fclose(ff); }
         FILE *fl = fopen("/tmp/faultlr.bin", "wb");
         if (fl) { fwrite((void *)(ts->__lr - 32), 1, 256, fl); fclose(fl); }
         FILE *fs = fopen("/tmp/faultsp.bin", "wb");
