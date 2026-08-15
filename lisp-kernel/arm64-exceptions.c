@@ -2845,8 +2845,14 @@ catch_mach_exception_raise_state(mach_port_t exception_port,
     natural fpc = (natural)ts->__pc;
     FILE *ff = fopen("/tmp/faultcode.bin", "wb");
     if (ff) { fwrite((void *)(fpc - 32), 1, 256, ff); fclose(ff); }
-    { FILE *fl = fopen("/tmp/faultlr.bin", "wb");
-      if (fl) { fwrite((void *)(ts->__lr - 32), 1, 256, fl); fclose(fl); } }
+    { static int first_lr = 1;
+      if (first_lr) {
+        first_lr = 0;
+        FILE *fl = fopen("/tmp/faultlr.bin", "wb");
+        if (fl) { fwrite((void *)(ts->__lr - 32), 1, 256, fl); fclose(fl); }
+        FILE *fs = fopen("/tmp/faultsp.bin", "wb");
+        if (fs) { fwrite((void *)(ts->__sp), 1, 128, fs); fclose(fs); }
+      } }
     fprintf(dbgout, ";; BADACCESS pc=0x%lx insn=0x%08x lr=0x%llx sp=0x%llx x0=0x%llx x1=0x%llx x2=0x%llx x3=0x%llx x7=0x%llx x10=0x%llx x11=0x%llx x22=0x%llx x24=0x%llx x25=0x%llx x26=0x%llx x28=0x%llx x29=0x%llx\n",
             fpc, (unsigned)*(unsigned int *)fpc,
             (long long)ts->__lr, (long long)ts->__sp, (long long)ts->__x[0], (long long)ts->__x[1],
