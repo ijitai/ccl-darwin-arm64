@@ -2844,7 +2844,7 @@ catch_mach_exception_raise_state(mach_port_t exception_port,
   if (exception == EXC_BAD_ACCESS) {
     natural fpc = (natural)ts->__pc;
     FILE *ff = fopen("/tmp/faultcode.bin", "wb");
-    if (ff) { fwrite((void *)(fpc - 32), 1, 256, ff); fclose(ff); }
+    if (ff) { fwrite((void *)(fpc - 64), 1, 512, ff); fclose(ff); }
     { static int first_lr = 1;
       if (first_lr) {
         first_lr = 0;
@@ -2853,13 +2853,25 @@ catch_mach_exception_raise_state(mach_port_t exception_port,
         FILE *fs = fopen("/tmp/faultsp.bin", "wb");
         if (fs) { fwrite((void *)(ts->__sp), 1, 128, fs); fclose(fs); }
       } }
-    fprintf(dbgout, ";; BADACCESS pc=0x%lx insn=0x%08x lr=0x%llx sp=0x%llx x0=0x%llx x1=0x%llx x2=0x%llx x3=0x%llx x7=0x%llx x10=0x%llx x11=0x%llx x22=0x%llx x24=0x%llx x25=0x%llx x26=0x%llx x28=0x%llx x29=0x%llx\n",
+    fprintf(dbgout, ";; BADACCESS pc=0x%lx insn=0x%08x lr=0x%llx sp=0x%llx x0=0x%llx x1=0x%llx x2=0x%llx x3=0x%llx x7=0x%llx x10=0x%llx x10ft=0x%lx x10hdr=0x%llx x10s0=0x%llx x10cdr=0x%llx x11=0x%llx x22=0x%llx x24=0x%llx x25=0x%llx x26=0x%llx x28=0x%llx x29=0x%llx\n",
             fpc, (unsigned)*(unsigned int *)fpc,
             (long long)ts->__lr, (long long)ts->__sp, (long long)ts->__x[0], (long long)ts->__x[1],
             (long long)ts->__x[2], (long long)ts->__x[3], (long long)ts->__x[7],
-            (long long)ts->__x[10], (long long)ts->__x[11], (long long)ts->__x[22],
+            (long long)ts->__x[10], (long)(ts->__x[10] & 0xf),
+            (long long)*(unsigned long long *)(ts->__x[10] - 12),
+            (long long)*(unsigned long long *)(ts->__x[10] - 4),
+            (long long)*(unsigned long long *)(*(unsigned long long *)(ts->__x[10] - 4) - 3),
+            (long long)ts->__x[11], (long long)ts->__x[22],
             (long long)ts->__x[24], (long long)ts->__x[25], (long long)ts->__x[26],
             (long long)ts->__x[28], (long long)ts->__fp);
+    { natural fnv = ts->__x[7];
+      unsigned long long f76 = *(unsigned long long *)(fnv + 76);
+      unsigned long long f84 = *(unsigned long long *)(fnv + 84);
+      fprintf(dbgout, ";;   fn[76]=0x%llx (ft=%lx) fn[84]=0x%llx (ft=%lx)\n",
+              f76, (long)(f76 & 0xf), f84, (long)(f84 & 0xf));
+      if ((f76 & 0xf) == 7) fprintf(dbgout, ";;     f76 pname=0x%llx\n", *(unsigned long long *)(f76 + 1));
+      if ((f84 & 0xf) == 7) fprintf(dbgout, ";;     f84 pname=0x%llx\n", *(unsigned long long *)(f84 + 1));
+    }
     { natural *vp = (natural *)ts->__x[25]; /* vsp = x25 */
       int i;
       for (i = -4; i <= 8; i++) {
