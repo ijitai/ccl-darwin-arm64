@@ -1296,8 +1296,13 @@ a host-structure or string."
            (*loading-file-source-file* (namestring source-file))
            (*loading-toplevel-location* nil))
       (declare (special *loading-files* *loading-file-source-file*))
-      (when verbose
-	(format t "~&;Loading ~S..." *load-pathname*)
+      ;; PORT-FIX: print the banner here with the portable *LOAD-PATHNAME*
+      ;; (logical/relative) and suppress %fasload's own banner (which prints
+      ;; the absolute truename, e.g. /Users/<user>/.../bin/foo.da64fsl) by
+      ;; binding *LOAD-VERBOSE* true around the %fasload call.  Nested LOADs
+      ;; inside the fasl inherit the binding and print their own banners.
+      (when (or verbose *%fasload-verbose*)
+	(format t "~&;Loading ~S...~%" *load-pathname*)
 	(force-output))
       (cond ((fasl-file-p file-name)
 	     (let ((*fasload-print* print)
@@ -1325,7 +1330,8 @@ a host-structure or string."
 			#+versioned-file-system
 			(namestring p)))
 		 (restart-case (multiple-value-bind (winp err) 
-				   (%fasload (defaulted-native-namestring file-name))
+				   (let ((*load-verbose* t))   ; PORT-FIX: suppress %fasload's truename banner
+				     (%fasload (defaulted-native-namestring file-name)))
 				 (if (not winp) 
 				   (%err-disp err)))
 		   (load-source 
@@ -1463,7 +1469,13 @@ Each function receives a module name as a single argument; if the function knows
 
 (defun find-module-pathnames (module)
   "Returns the file or list of files making up the module"
-  (let ((mod-path (make-pathname :name (string-downcase module) :defaults nil)) path)
+  ;; PORT-FIX: return the MERGED (typically logical, e.g. ccl:bin;foo.da64fsl)
+  ;; pathname rather than the probed absolute truename, so LOAD records and
+  ;; prints a portable path instead of a machine-specific absolute directory
+  ;; (e.g. /Users/<user>/.../bin/foo.da64fsl).  LOAD re-probes and translates
+  ;; the logical host at runtime, so resolution still follows the actual
+  ;; location of the running image.
+  (let ((mod-path (make-pathname :name (string-downcase module) :defaults nil)))
         (dolist (path-cand *module-search-path* nil)
 	  (let ((mod-cand (merge-pathnames mod-path path-cand)))
 	    (if (wild-pathname-p path-cand)
@@ -1473,11 +1485,9 @@ Each function receives a module name as a single argument; if the function knows
 					(directory (merge-pathnames mod-cand *.fasl-pathname*)))
 				    (directory mod-cand))))
 		  (when (and matches (null (cdr matches)))
-		    (return (if untyped-p
-				(make-pathname :type nil :defaults (car matches))
-				(car matches)))))
-		(when (setq path (find-load-file (merge-pathnames mod-path path-cand)))
-		  (return path)))))))
+		    (return mod-cand)))
+		(when (find-load-file mod-cand)
+		  (return mod-cand)))))))
 
 (defun wild-pathname-p (pathname &optional field-key)
   "Predicate for determining whether pathname contains any wildcards."
